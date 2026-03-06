@@ -1,0 +1,24 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-background: #0a0a0a;
+  --color-surface: #141414;
+  --color-border: #262626;
+  --color-text-primary: #ededed;
+  --color-text-secondary: #a3a3a3;
+  --color-accent: #3b82f6; /* Subtle blue accent */
+}
+
+html, body {
+  overscroll-behavior: none;
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+  font-family: 'Inter', sans-serif;
+}
+
+.dark {
+  background-color: var(--color-background);
+}
+
+
