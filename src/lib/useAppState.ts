@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Message, Project, ArchivedSession, WorkspaceFiles, AIModel } from '../types';
 import { generateId } from './utils';
+import { VectorStore } from '../services/vectorStore';
+
+const vectorStore = new VectorStore();
 
 const DEFAULT_MODELS: AIModel[] = [
   { id: 'auto', name: 'Auto (Akıllı Seçim)', provider: 'auto', isDefault: true },
@@ -8,7 +11,9 @@ const DEFAULT_MODELS: AIModel[] = [
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', provider: 'google', isDefault: true },
   { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite', provider: 'google', isDefault: true },
   { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', isDefault: true },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', isDefault: true },
   { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', provider: 'custom', baseUrl: 'https://api.anthropic.com/v1/messages', isDefault: true },
+  { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'custom', baseUrl: 'https://api.anthropic.com/v1/messages', isDefault: true },
   { id: 'grok-beta', name: 'Grok Beta', provider: 'xai', baseUrl: 'https://api.x.ai/v1/chat/completions', isDefault: true }
 ];
 
@@ -47,6 +52,14 @@ export function useAppState() {
       return [];
     }
   });
+
+  const indexFile = useCallback(async (path: string, content: string) => {
+    await vectorStore.indexFile(path, content);
+  }, []);
+
+  const searchContext = useCallback(async (query: string) => {
+    return await vectorStore.search(query);
+  }, []);
   
   const [savedProjects, setSavedProjects] = useState<Project[]>(() => {
     try {
@@ -64,16 +77,60 @@ export function useAppState() {
     }
   });
 
-  const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'code' | 'preview' | 'projects'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'code' | 'preview' | 'projects' | 'plan' | 'debugger'>('chat');
   
   // Workspace State
-  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(false);
-  const [wsFiles, setWsFiles] = useState<WorkspaceFiles>({});
+  const [wsFiles, setWsFilesRaw] = useState<WorkspaceFiles>({});
   const [currentFileName, setCurrentFileName] = useState<string>('');
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string | null>(null);
   const [wsProjectName, setWsProjectName] = useState('Aktif Proje');
   const [aiContextFiles, setAiContextFiles] = useState<Set<string>>(new Set());
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+
+  // History State for Undo/Redo
+  const [wsHistory, setWsHistory] = useState<WorkspaceFiles[]>([{}]);
+  const [wsHistoryIndex, setWsHistoryIndex] = useState<number>(0);
+
+  const setWsFiles = useCallback((newFilesOrUpdater: React.SetStateAction<WorkspaceFiles>) => {
+    setWsFilesRaw(prev => {
+      const nextFiles = typeof newFilesOrUpdater === 'function' ? newFilesOrUpdater(prev) : newFilesOrUpdater;
+      
+      // If nothing changed, don't add to history
+      if (JSON.stringify(prev) === JSON.stringify(nextFiles)) {
+        return prev;
+      }
+
+      setWsHistory(prevHistory => {
+        const newHistory = prevHistory.slice(0, wsHistoryIndex + 1);
+        newHistory.push(nextFiles);
+        // Keep last 30 states
+        if (newHistory.length > 30) {
+          newHistory.shift();
+        }
+        return newHistory;
+      });
+      
+      setWsHistoryIndex(prevIndex => Math.min(prevIndex + 1, 29));
+      
+      return nextFiles;
+    });
+  }, [wsHistoryIndex]);
+
+  const undoWs = useCallback(() => {
+    if (wsHistoryIndex > 0) {
+      const newIndex = wsHistoryIndex - 1;
+      setWsHistoryIndex(newIndex);
+      setWsFilesRaw(wsHistory[newIndex]);
+    }
+  }, [wsHistory, wsHistoryIndex]);
+
+  const redoWs = useCallback(() => {
+    if (wsHistoryIndex < wsHistory.length - 1) {
+      const newIndex = wsHistoryIndex + 1;
+      setWsHistoryIndex(newIndex);
+      setWsFilesRaw(wsHistory[newIndex]);
+    }
+  }, [wsHistory, wsHistoryIndex]);
 
   // Save to localStorage when state changes
   useEffect(() => {
@@ -145,10 +202,7 @@ export function useAppState() {
   }, []);
 
   const openWorkspaceFromChat = useCallback((filesObj: WorkspaceFiles) => {
-    setWsFiles(prev => {
-      const newFiles = { ...prev, ...filesObj };
-      return newFiles;
-    });
+    setWsFiles(prev => ({ ...prev, ...filesObj }));
     
     setAiContextFiles(prev => {
       const newSet = new Set(prev);
@@ -157,21 +211,72 @@ export function useAppState() {
     });
 
     setWsProjectName("Aktif Proje");
-    const firstFile = Object.keys(filesObj)[0] || Object.keys(wsFiles)[0];
+    
+    // Find first file
+    let firstFile = "";
+    const findFirst = (files: WorkspaceFiles) => {
+      for (const [name, node] of Object.entries(files)) {
+        if (node.type === 'file') {
+          firstFile = name;
+          return true;
+        } else if (node.children && findFirst(node.children)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    findFirst(filesObj);
+    
     if (firstFile) setCurrentFileName(firstFile);
-    setIsWorkspaceOpen(true);
+    if (window.innerWidth < 768) {
+      if (filesObj['gorev_plani.md']) {
+        setActiveTab('plan');
+      } else {
+        setActiveTab('code');
+      }
+    } else {
+      if (filesObj['gorev_plani.md']) {
+        setActiveTab('plan');
+      }
+    }
   }, [wsFiles]);
 
   const openProjectFromList = useCallback((id: string) => {
     const project = savedProjects.find(p => p.id === id);
     if (project) {
       setWsFiles(project.files);
-      setAiContextFiles(new Set(Object.keys(project.files)));
+      
+      // Flatten files for context
+      const flatFiles: string[] = [];
+      const flatten = (files: WorkspaceFiles) => {
+        for (const [name, node] of Object.entries(files)) {
+          if (node.type === 'file') flatFiles.push(name);
+          else if (node.children) flatten(node.children);
+        }
+      };
+      flatten(project.files);
+      
+      setAiContextFiles(new Set(flatFiles));
       setWsProjectName(project.title);
       setCurrentWorkspaceId(project.id);
-      const firstFile = Object.keys(project.files)[0];
+      
+      // Find first file
+      let firstFile = "";
+      const findFirst = (files: WorkspaceFiles) => {
+        for (const [name, node] of Object.entries(files)) {
+          if (node.type === 'file') {
+            firstFile = name;
+            return true;
+          } else if (node.children && findFirst(node.children)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      findFirst(project.files);
+      
       if (firstFile) setCurrentFileName(firstFile);
-      setIsWorkspaceOpen(true);
+      setActiveTab('code');
     }
   }, [savedProjects]);
 
@@ -183,7 +288,6 @@ export function useAppState() {
     savedProjects, setSavedProjects,
     archivedSessions, setArchivedSessions,
     activeTab, setActiveTab,
-    isWorkspaceOpen, setIsWorkspaceOpen,
     wsFiles, setWsFiles,
     currentFileName, setCurrentFileName,
     currentWorkspaceId, setCurrentWorkspaceId,
@@ -199,6 +303,12 @@ export function useAppState() {
     openWorkspaceFromChat,
     openProjectFromList,
     deleteProject: (id: string) => setSavedProjects(prev => prev.filter(p => p.id !== id)),
-    deleteArchivedSession: (id: string) => setArchivedSessions(prev => prev.filter(s => s.id !== id))
+    deleteArchivedSession: (id: string) => setArchivedSessions(prev => prev.filter(s => s.id !== id)),
+    undoWs,
+    redoWs,
+    canUndoWs: wsHistoryIndex > 0,
+    canRedoWs: wsHistoryIndex < wsHistory.length - 1,
+    indexFile,
+    searchContext
   };
 }

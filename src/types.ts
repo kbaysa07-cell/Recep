@@ -9,9 +9,15 @@ export interface Message {
   isHidden: boolean;
 }
 
-export interface WorkspaceFiles {
-  [filename: string]: string;
+export interface FileNode {
+  type: 'file' | 'folder';
+  name: string;
+  content?: string;
+  isBinary?: boolean;
+  children?: { [name: string]: FileNode };
 }
+
+export type WorkspaceFiles = { [name: string]: FileNode };
 
 export interface Project {
   id: string;

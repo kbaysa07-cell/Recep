@@ -1,10 +1,12 @@
 import React, { useRef, useEffect, useState } from 'react';
-import html2canvas from 'html2canvas';
 import { Message, WorkspaceFiles, AIModel } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { Send, AlertTriangle } from 'lucide-react';
 import { sendMessageToAI } from '../lib/gemini';
 import { generateId } from '../lib/utils';
+import { AgentActivityPanel } from './AgentActivityPanel';
+import { useChatTools } from '../hooks/useChatTools';
+import { toast } from 'sonner';
 
 interface ChatViewProps {
   chatHistory: Message[];
@@ -20,6 +22,10 @@ interface ChatViewProps {
   setActiveModelId: (id: string) => void;
   isTaskMode: boolean;
   iframeRef: React.RefObject<HTMLIFrameElement>;
+  activity: {type: 'thought' | 'file' | 'terminal' | 'web', message: string}[];
+  setActivity: React.Dispatch<React.SetStateAction<{type: 'thought' | 'file' | 'terminal' | 'web', message: string}[]>>;
+  setWsFiles: React.Dispatch<React.SetStateAction<WorkspaceFiles>>;
+  searchContext: (query: string) => Promise<string[]>;
 }
 
 export function ChatView({
@@ -35,12 +41,17 @@ export function ChatView({
   activeModelId,
   setActiveModelId,
   isTaskMode,
-  iframeRef
+  iframeRef,
+  activity,
+  setActivity,
+  setWsFiles,
+  searchContext
 }: ChatViewProps) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const chatBoxRef = useRef<HTMLDivElement>(null);
   const activeModel = models.find(m => m.id === activeModelId) || models[0];
+  const tools = useChatTools(wsFiles, setWsFiles, setActivity);
 
   const scrollToBottom = () => {
     if (chatBoxRef.current) {
@@ -64,19 +75,21 @@ export function ChatView({
   }, [pendingPrompt, isLoading]);
 
   const handleFunctionCall = async (functionCall: any) => {
-    if (functionCall.name === 'takeScreenshot') {
-      if (iframeRef.current && iframeRef.current.contentDocument) {
-        const canvas = await html2canvas(iframeRef.current.contentDocument.body);
-        const dataUrl = canvas.toDataURL('image/png');
-        return dataUrl;
-      }
+    if (functionCall.name === 'readMultipleFiles') {
+      return await tools.readMultipleFiles(functionCall.args.paths);
     }
-    if (functionCall.name === 'runVisualDiagnostic') {
-      if (iframeRef.current && iframeRef.current.contentDocument) {
-        const canvas = await html2canvas(iframeRef.current.contentDocument.body);
-        const dataUrl = canvas.toDataURL('image/png');
-        return dataUrl;
-      }
+    if (functionCall.name === 'grepSearch') {
+      return await tools.grepSearch(functionCall.args.pattern);
+    }
+    if (functionCall.name === 'dependencyCheck') {
+      return await tools.dependencyCheck();
+    }
+    if (functionCall.name === 'testRunner') {
+      return await tools.testRunner();
+    }
+    if (functionCall.name === 'runTerminalCommand') {
+      const { command } = functionCall.args;
+      return await tools.runCommand(command);
     }
     return null;
   };
@@ -97,15 +110,47 @@ export function ChatView({
     setInput('');
     setIsLoading(true);
 
+    const relevantFiles = await searchContext(textToSend);
+    const newContextFiles = new Set(aiContextFiles);
+    relevantFiles.forEach(f => newContextFiles.add(f));
+
+    const aiMsgId = generateId();
+    setChatHistory(prev => [...prev, {
+      id: aiMsgId,
+      text: '',
+      sender: 'model',
+      isRaw: true,
+      isHidden: false,
+    }]);
+
+    setActivity([]);
+
+    // Görsel geri bildirim: Bağlamdaki dosyaların analizi
+    const filesFound = Object.keys(wsFiles).filter(f => newContextFiles.has(f));
+    if (filesFound.length > 0) {
+      let totalLines = 0;
+      filesFound.forEach(f => {
+        totalLines += wsFiles[f].content.split('\n').length;
+      });
+      toast.info(`Bağlamdaki ${filesFound.length} dosya (${totalLines} satır kod) yapay zekaya iletildi.`);
+    }
+
     try {
       let replyText = await sendMessageToAI(
         [...chatHistory, userMsg],
         userMsg.text,
         wsFiles,
-        aiContextFiles,
+        newContextFiles,
         limit,
         activeModel,
-        isTaskMode
+        isTaskMode,
+        (chunk) => {
+          setChatHistory(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: m.text + chunk } : m));
+        },
+        (activity) => {
+          setActivity(prev => [...prev, activity]);
+        },
+        tools
       );
       
       // Handle function calls if any
@@ -113,9 +158,9 @@ export function ChatView({
           const parsed = JSON.parse(replyText);
           for (const call of parsed.functionCalls) {
               const result = await handleFunctionCall(call);
-              // For simplicity, we'll just append the result to the conversation
               replyText = `Tool sonucu (${call.name}): ${result}`;
           }
+          setChatHistory(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: replyText } : m));
       }
 
       // Parse files and auto-apply to workspace
@@ -127,31 +172,16 @@ export function ChatView({
       while ((match = fileRegex.exec(replyText)) !== null) {
         hasFiles = true;
         filesFound[match[1].trim()] = match[2].trim();
+        setActivity(prev => [...prev, { type: 'file', message: `Dosya oluşturuldu: ${match[1].trim()}` }]);
       }
 
       if (hasFiles) {
         onOpenWorkspace(filesFound);
       }
-
-      const botMsg: Message = {
-        id: generateId(),
-        text: replyText,
-        sender: 'model',
-        isRaw: true,
-        isHidden: false,
-      };
-
-      setChatHistory(prev => [...prev, botMsg]);
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      const errorMsg: Message = {
-        id: generateId(),
-        text: "Bağlantı hatası veya API anahtarı geçersiz.",
-        sender: 'model',
-        isRaw: false,
-        isHidden: false,
-      };
-      setChatHistory(prev => [...prev, errorMsg]);
+      setActivity(prev => [...prev, { type: 'thought', message: 'Hata oluştu!' }]);
+      setChatHistory(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: error.message || "Bağlantı hatası veya API anahtarı geçersiz." } : m));
     } finally {
       setIsLoading(false);
     }
@@ -161,36 +191,30 @@ export function ChatView({
   const showWarning = visibleMessagesCount >= limit;
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden relative bg-[#f0f2f5] dark:bg-[#18191a]">
+    <div className="flex flex-col flex-1 overflow-hidden relative bg-gray-50 dark:bg-[#18191a] transition-colors duration-200">
       <div ref={chatBoxRef} className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 scroll-smooth">
+        <AgentActivityPanel activity={activity} isLoading={isLoading} />
         {chatHistory.length === 0 && (
           <div className="text-center text-gray-500 dark:text-gray-400 mt-10 text-sm">
-            Selam! **Recep AI** devrede.<br /><br />
-            Çalışma ortamındaki dosyaların yanındaki **👁️ (Açık) / 🙈 (Kapalı)** ikonlarını kullanarak yapay zekanın hangi dosyaları okuyup hangilerini okumayacağını seçebilirsin.
+            Selam! <strong>Recep AI</strong> devrede.<br /><br />
+            Çalışma ortamındaki dosyaların yanındaki <strong>👁️ (Açık) / 🙈 (Kapalı)</strong> ikonlarını kullanarak yapay zekanın hangi dosyaları okuyup hangilerini okumayacağını seçebilirsin.
+            {isTaskMode && (
+              <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 rounded-lg text-blue-600 dark:text-blue-400 text-xs transition-colors duration-200">
+                <strong>Görev Modu Aktif:</strong> Yapay zeka verdiğin istekleri parçalara ayırarak adım adım bir plan oluşturacak ve bunu <code>gorev_plani.md</code> dosyasına kaydederek Görev Panosunda gösterecek.
+              </div>
+            )}
           </div>
         )}
         {chatHistory.map(msg => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
-        {isLoading && (
-          <div className="self-start bg-white dark:bg-[#242526] text-gray-900 dark:text-gray-100 p-3 rounded-2xl rounded-bl-sm shadow-sm flex items-center gap-2">
-            {Object.keys(wsFiles).length > 0 && (
-              <span className="text-[11px] text-blue-600 dark:text-blue-400 font-bold mr-2">🔍 Dosyalar analiz ediliyor...</span>
-            )}
-            <div className="flex gap-1">
-              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></span>
-            </div>
-          </div>
-        )}
       </div>
 
-      <div className="flex p-2 bg-[#0a0a0a] border-t border-[#262626] items-center gap-2">
+      <div className="flex p-2 bg-white dark:bg-[#0a0a0a] border-t border-gray-200 dark:border-[#262626] items-center gap-2 transition-colors duration-200">
         <select 
           value={activeModelId}
           onChange={e => setActiveModelId(e.target.value)}
-          className="p-2 border border-[#262626] rounded-lg bg-[#141414] text-[#ededed] outline-none text-[11px] max-w-[120px]"
+          className="p-2 border border-gray-200 dark:border-[#262626] rounded-lg bg-gray-50 dark:bg-[#141414] text-gray-900 dark:text-[#ededed] outline-none text-[11px] max-w-[120px] transition-colors duration-200"
         >
           {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
@@ -200,13 +224,13 @@ export function ChatView({
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSend()}
           placeholder="Danışmana proje veya kod isteği yaz..."
-          className="flex-1 p-3 border border-[#262626] rounded-full outline-none text-sm bg-[#141414] text-[#ededed]"
+          className="flex-1 p-3 border border-gray-200 dark:border-[#262626] rounded-full outline-none text-sm bg-gray-50 dark:bg-[#141414] text-gray-900 dark:text-[#ededed] transition-colors duration-200"
           autoComplete="off"
         />
         <button
           onClick={() => handleSend()}
           disabled={isLoading || !input.trim()}
-          className="bg-white text-black border-none w-11 h-11 rounded-full cursor-pointer flex justify-center items-center disabled:opacity-50 transition-opacity"
+          className="bg-blue-600 text-white border-none w-11 h-11 rounded-full cursor-pointer flex justify-center items-center disabled:opacity-50 transition-opacity"
         >
           <Send className="w-5 h-5" />
         </button>

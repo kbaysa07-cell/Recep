@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
+import { exec } from "child_process";
 
 dotenv.config();
 
@@ -16,6 +17,18 @@ async function startServer() {
   
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", message: "Recep AI Engine Server is running" });
+  });
+
+  app.post("/api/terminal", (req, res) => {
+    const { command } = req.body;
+    if (!command) return res.status(400).json({ error: "Komut gerekli" });
+
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        return res.json({ error: error.message, stdout, stderr });
+      }
+      res.json({ stdout, stderr });
+    });
   });
 
   // --- VITE MIDDLEWARE (Must be after API routes) ---
