@@ -32,6 +32,7 @@ async function startServer() {
     res.json({ status: "ok", message: "Recep AI Engine Server is running" });
   });
 
+  // --- TERMINAL API ---
   app.post("/api/terminal", async (req, res) => {
     const { command } = req.body;
     if (!command) return res.status(400).json({ error: "Komut gerekli" });
@@ -92,6 +93,50 @@ async function startServer() {
       }
       res.json({ stdout, stderr });
     });
+  });
+
+  // --- FILE OPERATIONS API ---
+  app.post("/api/files/read", (req, res) => {
+    const { path: filePath } = req.body;
+    if (!filePath) return res.status(400).json({ error: "Dosya yolu gerekli" });
+    
+    const absolutePath = path.join(process.cwd(), filePath);
+    if (!fs.existsSync(absolutePath)) return res.status(404).json({ error: "Dosya bulunamadı" });
+    
+    const content = fs.readFileSync(absolutePath, 'utf-8');
+    res.json({ content });
+  });
+
+  app.post("/api/files/write", (req, res) => {
+    const { path: filePath, content } = req.body;
+    if (!filePath || content === undefined) return res.status(400).json({ error: "Dosya yolu ve içerik gerekli" });
+    
+    const absolutePath = path.join(process.cwd(), filePath);
+    fs.writeFileSync(absolutePath, content, 'utf-8');
+    res.json({ success: true });
+  });
+
+  app.post("/api/files/create", (req, res) => {
+    const { path: filePath, content } = req.body;
+    if (!filePath) return res.status(400).json({ error: "Dosya yolu gerekli" });
+    
+    const absolutePath = path.join(process.cwd(), filePath);
+    const dir = path.dirname(absolutePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    
+    fs.writeFileSync(absolutePath, content || '', 'utf-8');
+    res.json({ success: true });
+  });
+
+  app.post("/api/files/delete", (req, res) => {
+    const { path: filePath } = req.body;
+    if (!filePath) return res.status(400).json({ error: "Dosya yolu gerekli" });
+    
+    const absolutePath = path.join(process.cwd(), filePath);
+    if (!fs.existsSync(absolutePath)) return res.status(404).json({ error: "Dosya bulunamadı" });
+    
+    fs.unlinkSync(absolutePath);
+    res.json({ success: true });
   });
 
   // --- SOCKET.IO TERMINAL ---

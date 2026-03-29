@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { WorkspaceFiles, FileNode } from '../types/workspace.types';
 
 import { Activity } from './useActivity';
 import { getEmbedding, cosineSimilarity } from '../services/embeddingService';
 import { analyzeAndFix } from '../services/selfHealingService';
 import { findNode, cloneWorkspace, flattenWorkspace, ensureDirectory } from '../lib/workspaceUtils';
+import { normalizePath } from '../lib/pathUtils';
 
 export function useChatTools(
   wsFiles: WorkspaceFiles,
@@ -11,45 +13,49 @@ export function useChatTools(
   setActivity: React.Dispatch<React.SetStateAction<Activity[]>>,
   setGithubState?: React.Dispatch<React.SetStateAction<any>>
 ) {
+  const [lastReadFiles, setLastReadFiles] = useState<Set<string>>(new Set());
   const runCommand = async (command: string) => {
     setActivity(prev => [...prev, { type: 'terminal', message: `Komut çalıştırıldı: ${command}`, timestamp: Date.now() }]);
     
-    try {
-      const response = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Terminal API bulunamadı');
-      }
-      
-      const data = await response.json();
-      
-      if (command.startsWith('git clone')) {
-        const repoName = command.split(' ')[2] || 'depo';
-        setActivity(prev => [...prev, { type: 'file', message: `Depo klonlandı: ${repoName}`, timestamp: Date.now() }]);
-      }
-      
-      return data.stdout || data.stderr || data.error;
-    } catch (err) {
-      // Fallback for browser environment without backend
-      if (command.startsWith('npm install') || command.startsWith('npm i')) {
-        const packages = command.split(' ').slice(2).join(', ');
-        return `Simüle edildi: ${packages} paketleri yüklendi (Tarayıcı ortamında paketler CDN üzerinden otomatik yüklenir).`;
-      } else if (command.startsWith('git clone')) {
-        return `Simüle edildi: 'fetchGithubRepo' aracını kullanarak GitHub depolarını klonlayabilirsiniz.`;
-      } else {
-        return `Simüle edildi: ${command} (Gerçek terminal bağlantısı yok)`;
-      }
+    const response = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Terminal API hatası');
     }
+    
+    const data = await response.json();
+    
+    if (command.startsWith('git clone')) {
+      const repoName = command.split(' ')[2] || 'depo';
+      setActivity(prev => [...prev, { type: 'file', message: `Depo klonlandı: ${repoName}`, timestamp: Date.now() }]);
+    }
+    
+    return data.stdout || data.stderr || data.error;
   };
 
-  const editFile = (path: string, content: string) => {
+  const editFile = async (path: string, content: string) => {
+    const normalizedPath = normalizePath(path);
+    if (!lastReadFiles.has(normalizedPath)) {
+      setActivity(prev => [...prev, { type: 'terminal', message: `UYARI: ${normalizedPath} dosyası düzenlenmeden önce okunmadı.`, timestamp: Date.now() }]);
+    }
+
+    try {
+      await fetch('/api/files/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: normalizedPath, content }),
+      });
+    } catch (err) {
+      console.error("Dosya yazma hatası:", err);
+    }
+    
     setWsFiles(prev => {
       const newFiles = cloneWorkspace(prev);
-      const parts = path.split('/').filter(Boolean);
+      const parts = normalizedPath.split('/').filter(Boolean);
       const fileName = parts.pop();
       
       if (!fileName) return prev;
@@ -64,10 +70,20 @@ export function useChatTools(
       
       return newFiles;
     });
-    setActivity(prev => [...prev, { type: 'file', message: `Dosya düzenlendi: ${path}`, timestamp: Date.now() }]);
+    setActivity(prev => [...prev, { type: 'file', message: `Dosya düzenlendi: ${normalizedPath}`, timestamp: Date.now() }]);
   };
 
-  const editMultipleFiles = (files: { path: string; content: string }[]) => {
+  const editMultipleFiles = async (files: { path: string; content: string }[]) => {
+    try {
+      await Promise.all(files.map(file => fetch('/api/files/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: file.path, content: file.content }),
+      })));
+    } catch (err) {
+      console.error("Çoklu dosya yazma hatası:", err);
+    }
+
     setWsFiles(prev => {
       const newFiles = cloneWorkspace(prev);
       
@@ -91,11 +107,22 @@ export function useChatTools(
     setActivity(prev => [...prev, { type: 'file', message: `Çoklu dosya düzenlendi: ${files.map(f => f.path).join(', ')}`, timestamp: Date.now() }]);
   };
 
-  const createFile = (path: string, content: string) => {
-    const isBinary = path.match(/\.(png|jpe?g|gif|webp|svg|mp3|wav|ogg)$/i) !== null;
+  const createFile = async (path: string, content: string) => {
+    const normalizedPath = normalizePath(path);
+    try {
+      await fetch('/api/files/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: normalizedPath, content }),
+      });
+    } catch (err) {
+      console.error("Dosya oluşturma hatası:", err);
+    }
+
+    const isBinary = normalizedPath.match(/\.(png|jpe?g|gif|webp|svg|mp3|wav|ogg)$/i) !== null;
     setWsFiles(prev => {
       const newFiles = cloneWorkspace(prev);
-      const parts = path.split('/').filter(Boolean);
+      const parts = normalizedPath.split('/').filter(Boolean);
       const fileName = parts.pop();
       
       if (!fileName) return prev;
@@ -105,10 +132,13 @@ export function useChatTools(
       
       return newFiles;
     });
-    setActivity(prev => [...prev, { type: 'file', message: `Dosya oluşturuldu: ${path}`, timestamp: Date.now() }]);
+    setActivity(prev => [...prev, { type: 'file', message: `Dosya oluşturuldu: ${normalizedPath}`, timestamp: Date.now() }]);
   };
 
   const readMultipleFiles = async (paths: string[]) => {
+    const normalizedPaths = paths.map(normalizePath);
+    setLastReadFiles(prev => new Set([...prev, ...normalizedPaths]));
+    
     let content = "";
     let totalLines = 0;
     let readCount = 0;
@@ -178,68 +208,74 @@ export function useChatTools(
 
 
   const dependencyCheck = async () => {
-    try {
-      const response = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'npm list' }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Terminal API bulunamadı');
-      }
-      
-      const data = await response.json();
-      setActivity(prev => [...prev, { type: 'terminal', message: `Bağımlılık kontrolü yapıldı`, timestamp: Date.now() }]);
-      return data.stdout || data.stderr || data.error;
-    } catch (err) {
-      setActivity(prev => [...prev, { type: 'terminal', message: `Bağımlılık kontrolü simüle edildi`, timestamp: Date.now() }]);
-      return "Simüle edildi: Bağımlılıklar kontrol edildi. (Gerçek terminal bağlantısı yok)";
+    const response = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'npm list' }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Terminal API hatası');
     }
+    
+    const data = await response.json();
+    setActivity(prev => [...prev, { type: 'terminal', message: `Bağımlılık kontrolü yapıldı`, timestamp: Date.now() }]);
+    return data.stdout || data.stderr || data.error;
   };
 
   const testRunner = async () => {
-    try {
-      const response = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'npm test' }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Terminal API bulunamadı');
-      }
-      
-      const data = await response.json();
-      setActivity(prev => [...prev, { type: 'terminal', message: `Testler çalıştırıldı`, timestamp: Date.now() }]);
-      return data.stdout || data.stderr || data.error;
-    } catch (err) {
-      setActivity(prev => [...prev, { type: 'terminal', message: `Testler simüle edildi`, timestamp: Date.now() }]);
-      return "Simüle edildi: Testler çalıştırıldı ve başarılı oldu. (Gerçek terminal bağlantısı yok)";
+    const response = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'npm test' }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Terminal API hatası');
     }
+    
+    const data = await response.json();
+    setActivity(prev => [...prev, { type: 'terminal', message: `Testler çalıştırıldı`, timestamp: Date.now() }]);
+    return data.stdout || data.stderr || data.error;
   };
 
   const runSpecificTests = async (testPath?: string) => {
     const command = testPath ? `npm test -- ${testPath}` : 'npm test';
-    try {
-      const response = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Terminal API bulunamadı');
-      }
-      
-      const data = await response.json();
-      setActivity(prev => [...prev, { type: 'terminal', message: `Testler çalıştırıldı: ${testPath || 'tümü'}`, timestamp: Date.now() }]);
-      return data.stdout || data.stderr || data.error;
-    } catch (err) {
-      setActivity(prev => [...prev, { type: 'terminal', message: `Testler simüle edildi: ${testPath || 'tümü'}`, timestamp: Date.now() }]);
-      return `Simüle edildi: Testler çalıştırıldı (${testPath || 'tümü'}). (Gerçek terminal bağlantısı yok)`;
+    const response = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Terminal API hatası');
     }
+    
+    const data = await response.json();
+    setActivity(prev => [...prev, { type: 'terminal', message: `Testler çalıştırıldı: ${testPath || 'tümü'}`, timestamp: Date.now() }]);
+    return data.stdout || data.stderr || data.error;
   };
+
+  const gitCommit = async (message: string) => {
+    setActivity(prev => [...prev, { type: 'terminal', message: `Commit yapılıyor: ${message}`, timestamp: Date.now() }]);
+    
+    // First add all files
+    await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: `git add .` }),
+    });
+
+    const response = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: `git commit -m "${message}"` }),
+    });
+    if (!response.ok) throw new Error('Terminal API hatası');
+    const data = await response.json();
+    return data.stdout || data.stderr || data.error || 'Commit başarılı.';
+  };
+
   const getFileContent = (path: string) => {
     const node = findNode(wsFiles, path);
     return node && node.type === 'file' ? node.content : null;
@@ -259,7 +295,7 @@ export function useChatTools(
       }
       
       const fileContent = getFileContent(filePath) || "";
-
+      
       const fixedContent = await analyzeAndFix(errorLog, fileContent, filePath);
       editFile(filePath, fixedContent);
       
@@ -308,84 +344,53 @@ export function useChatTools(
     return await runCommand(`git add ${file}`);
   };
 
-  const gitCommit = async (message: string) => {
-    setActivity(prev => [...prev, { type: 'terminal', message: `Commit yapılıyor: ${message}`, timestamp: Date.now() }]);
-    try {
-      // First add all files
-      await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: `git add .` }),
-      });
-
-      const response = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: `git commit -m "${message}"` }),
-      });
-      if (!response.ok) throw new Error('Terminal API bulunamadı');
-      const data = await response.json();
-      return data.stdout || data.stderr || data.error || 'Commit başarılı.';
-    } catch (err) {
-      return `Simüle edildi: Commit yapıldı "${message}" (Gerçek terminal bağlantısı yok)`;
-    }
-  };
-  const gitPush = async () => {
-    setActivity(prev => [...prev, { type: 'terminal', message: `Değişiklikler push ediliyor...`, timestamp: Date.now() }]);
-    try {
-      const response = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'git push' }),
-      });
-      if (!response.ok) throw new Error('Terminal API bulunamadı');
-      const data = await response.json();
-      return data.stdout || data.stderr || data.error || 'Push başarılı.';
-    } catch (err) {
-      return `Simüle edildi: Değişiklikler push edildi (Gerçek terminal bağlantısı yok)`;
-    }
-  };
-
   const gitPull = async () => {
     setActivity(prev => [...prev, { type: 'terminal', message: `Değişiklikler pull ediliyor...`, timestamp: Date.now() }]);
     return await runCommand('git pull');
   };
 
+  const gitPush = async () => {
+    setActivity(prev => [...prev, { type: 'terminal', message: `Değişiklikler push ediliyor...`, timestamp: Date.now() }]);
+    const response = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'git push' }),
+    });
+    if (!response.ok) throw new Error('Terminal API hatası');
+    const data = await response.json();
+    return data.stdout || data.stderr || data.error || 'Push başarılı.';
+  };
+
   const runDiagnostic = async () => {
     setActivity(prev => [...prev, { type: 'terminal', message: `Kapsamlı kod analizi başlatılıyor...`, timestamp: Date.now() }]);
     
-    try {
-      // 1. TypeScript Linting
-      const lintRes = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'npm run lint' }),
-      });
-      const lintData = await lintRes.json();
-      const lintResult = lintData.stdout || lintData.stderr || lintData.error || "Linting başarılı.";
+    // 1. TypeScript Linting
+    const lintRes = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'npm run lint' }),
+    });
+    const lintData = await lintRes.json();
+    const lintResult = lintData.stdout || lintData.stderr || lintData.error || "Linting başarılı.";
 
-      // 2. Security Audit (Simple grep for dangerous patterns)
-      const securityRes = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'grep -rI "eval\\|innerHTML\\|dangerouslySetInnerHTML" src' }),
-      });
-      const securityData = await securityRes.json();
-      const securityResult = securityData.stdout ? `Potansiyel güvenlik riskleri:\n${securityData.stdout}` : "Güvenlik taraması: Tehlikeli desen bulunamadı.";
+    // 2. Security Audit (Simple grep for dangerous patterns)
+    const securityRes = await fetch('/api/terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'grep -rI "eval\\|innerHTML\\|dangerouslySetInnerHTML" src' }),
+    });
+    const securityData = await securityRes.json();
+    const securityResult = securityData.stdout ? `Potansiyel güvenlik riskleri:\n${securityData.stdout}` : "Güvenlik taraması: Tehlikeli desen bulunamadı.";
 
-      // 3. Performance Audit (Check for large files or heavy imports)
-      const allFiles = flattenWorkspace(wsFiles);
-      const largeFiles = allFiles.filter(({ node }) => (node.content?.length || 0) > 20000).map(({ path }) => path);
-      const performanceResult = largeFiles.length > 0 ? `Büyük dosyalar (Performans uyarısı):\n${largeFiles.join('\n')}` : "Performans taraması: Büyük dosya bulunamadı.";
+    // 3. Performance Audit (Check for large files or heavy imports)
+    const allFiles = flattenWorkspace(wsFiles);
+    const largeFiles = allFiles.filter(({ node }) => (node.content?.length || 0) > 20000).map(({ path }) => path);
+    const performanceResult = largeFiles.length > 0 ? `Büyük dosyalar (Performans uyarısı):\n${largeFiles.join('\n')}` : "Performans taraması: Büyük dosya bulunamadı.";
 
-      const finalResult = `--- KOD ANALİZ RAPORU ---\n\n[LINT SONUCU]:\n${lintResult}\n\n[GÜVENLİK TARAMASI]:\n${securityResult}\n\n[PERFORMANS TARAMASI]:\n${performanceResult}`;
-      
-      setActivity(prev => [...prev, { type: 'terminal', message: `Kod analizi tamamlandı.`, timestamp: Date.now() }]);
-      return finalResult;
-    } catch (err) {
-      setActivity(prev => [...prev, { type: 'terminal', message: `Kod analizi simüle edildi.`, timestamp: Date.now() }]);
-      return "Simüle edildi: Kod analizi tamamlandı. (Gerçek terminal bağlantısı yok)";
-    }
+    const finalResult = `--- KOD ANALİZ RAPORU ---\n\n[LINT SONUCU]:\n${lintResult}\n\n[GÜVENLİK TARAMASI]:\n${securityResult}\n\n[PERFORMANS TARAMASI]:\n${performanceResult}`;
+    
+    setActivity(prev => [...prev, { type: 'terminal', message: `Kod analizi tamamlandı.`, timestamp: Date.now() }]);
+    return finalResult;
   };
 
   const fetchGithubRepo = async (repoUrl: string, token?: string) => {

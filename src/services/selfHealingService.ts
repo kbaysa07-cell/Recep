@@ -1,15 +1,16 @@
 import { GoogleGenAI } from "@google/genai";
-
-// Instead, let's pass the necessary tools to the selfHealing function.
-// Or just implement the logic here and use the tools passed.
+import { logHealingAttempt } from "./selfHealingLog";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function analyzeAndFix(
   errorLog: string,
   fileContent: string,
-  filePath: string
+  filePath: string,
+  attemptNumber: number
 ): Promise<string> {
+  await logHealingAttempt(filePath, errorLog, attemptNumber);
+  
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: `
