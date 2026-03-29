@@ -1,14 +1,14 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Message, WorkspaceFiles, AIModel } from '../types';
+import { Message } from '../types/chat.types';
+import { WorkspaceFiles } from '../types/workspace.types';
+import { AIModel } from '../types/ai.types';
+
 import { MessageBubble } from './MessageBubble';
-import { Send, AlertTriangle } from 'lucide-react';
-import { sendMessageToAI } from '../lib/gemini';
-import { generateId } from '../lib/utils';
+import { Send } from 'lucide-react';
 import { useChatTools } from '../hooks/useChatTools';
-import { flattenWorkspace } from '../lib/workspaceUtils';
 import { Activity } from '../hooks/useActivity';
 import { SemanticSearchBar } from './SemanticSearchBar';
-import { toast } from 'sonner';
+import { chatService } from '../services/chatService';
 
 interface ChatViewProps {
   chatHistory: Message[];
@@ -78,118 +78,27 @@ export function ChatView({
     }
   }, [pendingPrompt, isLoading]);
 
-  const handleFunctionCall = async (functionCall: any) => {
-    if (functionCall.name === 'readMultipleFiles') {
-      return await tools.readMultipleFiles(functionCall.args.paths);
-    }
-    if (functionCall.name === 'grepSearch') {
-      return await tools.grepSearch(functionCall.args.pattern);
-    }
-    if (functionCall.name === 'searchFiles') {
-      return await tools.searchFiles(functionCall.args.pattern);
-    }
-    if (functionCall.name === 'readFileChunk') {
-      return await tools.readFileChunk(functionCall.args.path, functionCall.args.startLine, functionCall.args.endLine);
-    }
-    if (functionCall.name === 'dependencyCheck') {
-      return await tools.dependencyCheck();
-    }
-    if (functionCall.name === 'testRunner') {
-      return await tools.testRunner();
-    }
-    if (functionCall.name === 'runTerminalCommand') {
-      const { command } = functionCall.args;
-      return await tools.runCommand(command);
-    }
-    if (functionCall.name === 'runDiagnostic') {
-      return await tools.runDiagnostic();
-    }
-    if (functionCall.name === 'fetchGithubRepo') {
-      return await tools.fetchGithubRepo(functionCall.args.repoUrl, providerKeys['github']);
-    }
-    if (functionCall.name === 'readGithubFile') {
-      return await tools.readGithubFile(functionCall.args.url, providerKeys['github']);
-    }
-    return null;
-  };
-
   const handleSend = async (overrideInput?: string) => {
     const textToSend = overrideInput || input.trim();
     if (!textToSend || isLoading) return;
 
-    const userMsg: Message = {
-      id: generateId(),
-      text: textToSend,
-      sender: 'user',
-      isRaw: false,
-      isHidden: false,
-    };
-
-    setChatHistory(prev => [...prev, userMsg]);
     setInput('');
-    setIsLoading(true);
-
-    const relevantFiles = await searchContext(textToSend);
-    const newContextFiles = new Set<string>();
-    relevantFiles.forEach(f => newContextFiles.add(f));
-
-    // Ayrıca kullanıcının mesajında doğrudan adı geçen dosyaları da ekle
-    const allFiles = flattenWorkspace(wsFiles);
-    allFiles.forEach(({ path }) => {
-      const fileName = path.split('/').pop() || path;
-      if (textToSend.includes(fileName) || textToSend.includes(path)) {
-        newContextFiles.add(path);
-      }
+    
+    await chatService.handleSend({
+      textToSend,
+      chatHistory,
+      wsFiles,
+      limit,
+      activeModel,
+      providerKeys,
+      isTaskMode,
+      setChatHistory,
+      setActivity,
+      setIsLoading,
+      searchContext,
+      tools
     });
-
-    const aiMsgId = generateId();
-    setChatHistory(prev => [...prev, {
-      id: aiMsgId,
-      text: '',
-      sender: 'model',
-      isRaw: true,
-      isHidden: false,
-      activity: []
-    }]);
-
-    setActivity([]);
-
-    try {
-      const replyText = await sendMessageToAI(
-        [...chatHistory, userMsg],
-        userMsg.text,
-        wsFiles,
-        newContextFiles,
-        limit,
-        activeModel,
-        providerKeys,
-        isTaskMode,
-        (chunk) => {
-          setChatHistory(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: m.text + chunk } : m));
-        },
-        (newActivity) => {
-          setActivity(prev => [...prev, newActivity]);
-          setChatHistory(prev => prev.map(m => m.id === aiMsgId ? { ...m, activity: [...(m.activity || []), newActivity] } : m));
-        },
-        tools
-      );
-      
-      // Tool calls are handled inside sendMessageToAI
-      
-    } catch (error: any) {
-      console.error(error);
-      const errorMsg = error.message || "Bağlantı hatası veya API anahtarı geçersiz.";
-      toast.error(errorMsg);
-      const errorActivity: Activity = { type: 'thought', message: 'Hata oluştu!', timestamp: Date.now() };
-      setActivity(prev => [...prev, errorActivity]);
-      setChatHistory(prev => prev.map(m => m.id === aiMsgId ? { ...m, text: errorMsg, activity: [...(m.activity || []), errorActivity] } : m));
-    } finally {
-      setIsLoading(false);
-    }
   };
-
-  const visibleMessagesCount = chatHistory.filter(m => !m.isHidden).length;
-  const showWarning = visibleMessagesCount >= limit;
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden relative bg-gray-50 dark:bg-[#18191a] transition-colors duration-200">

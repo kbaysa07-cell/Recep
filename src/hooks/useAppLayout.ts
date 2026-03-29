@@ -4,6 +4,9 @@ export function useAppLayout() {
   const [isMobile, setIsMobile] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [chatPosition, setChatPosition] = useState<'left' | 'right'>('left');
+  const [isChatPanelOpen, setIsChatPanelOpen] = useState(true);
+  const [isFilesPanelOpen, setIsFilesPanelOpen] = useState(true);
+  const [isTerminalPanelOpen, setIsTerminalPanelOpen] = useState(true);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -19,6 +22,12 @@ export function useAppLayout() {
     isChatOpen,
     setIsChatOpen,
     chatPosition,
-    setChatPosition
+    setChatPosition,
+    isChatPanelOpen,
+    setIsChatPanelOpen,
+    isFilesPanelOpen,
+    setIsFilesPanelOpen,
+    isTerminalPanelOpen,
+    setIsTerminalPanelOpen
   };
 }

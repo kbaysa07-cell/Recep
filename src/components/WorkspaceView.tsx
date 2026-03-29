@@ -3,7 +3,8 @@ import { Save, Download, Play, Eye, EyeOff, FileText, FileJson, FileCode, Messag
 import JSZip from 'jszip';
 import { TaskBoard } from './TaskBoard';
 import { Debugger } from './Debugger';
-import { FileNode, WorkspaceFiles } from '../types';
+import { FileNode, WorkspaceFiles } from '../types/workspace.types';
+
 import { findNode, cloneWorkspace, flattenWorkspace, ensureDirectory } from '../lib/workspaceUtils';
 import { Activity } from '../hooks/useActivity';
 import { cn } from '../lib/utils';

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { Message, WorkspaceFiles } from '../types';
+import { Message } from '../types/chat.types';
+import { WorkspaceFiles } from '../types/workspace.types';
+
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Code, FileCode2, Bot, FileText, Terminal, Search, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Github, Download, Key, Upload, GitCommit } from 'lucide-react';
-import { GithubState } from '../types';
+import { GithubState } from '../types/workspace.types';
+
 
 interface GitHubModalProps {
   isOpen: boolean;

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ArchivedSession } from '../types';
+import { ArchivedSession } from '../types/chat.types';
+
 import { X, Trash2, ArrowLeft } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';

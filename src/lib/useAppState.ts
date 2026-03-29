@@ -1,8 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import localforage from 'localforage';
-import { Message, Project, ArchivedSession, WorkspaceFiles, AIModel, ProviderConfig, GithubState } from '../types';
+import { Message, ArchivedSession } from '../types/chat.types';
+import { Project, WorkspaceFiles, GithubState } from '../types/workspace.types';
+import { AIModel, ProviderConfig } from '../types/ai.types';
+
 import { generateId } from './utils';
 import { DEFAULT_MODELS, GEMINI_MODELS, OPENAI_MODELS, ANTHROPIC_MODELS, XAI_MODELS } from '../constants/models';
+import { useChatState } from '../hooks/useChatState';
+import { useWorkspaceState } from '../hooks/useWorkspaceState';
 
 export function useAppState() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => 
@@ -46,23 +51,23 @@ export function useAppState() {
   
   // Storage states
   const [isStorageLoaded, setIsStorageLoaded] = useState(false);
-  const [chatHistory, setChatHistory] = useState<Message[]>([]);
+  const chatState = useChatState();
+  const workspaceState = useWorkspaceState();
   const [savedProjects, setSavedProjects] = useState<Project[]>([]);
-  const [archivedSessions, setArchivedSessions] = useState<ArchivedSession[]>([]);
 
   // Load data asynchronously from localforage
   useEffect(() => {
     const loadData = async () => {
       try {
         const storedFiles = await localforage.getItem<WorkspaceFiles>('wsFiles');
-        if (storedFiles) setWsFilesRaw(storedFiles);
+        if (storedFiles) workspaceState.setWsFilesRaw(storedFiles);
 
         const storedChat = await localforage.getItem<Message[]>('chatHistory');
-        if (storedChat) setChatHistory(storedChat);
+        if (storedChat) chatState.setChatHistory(storedChat);
         else {
           const oldChat = localStorage.getItem('chatHistory');
           if (oldChat) {
-            setChatHistory(JSON.parse(oldChat));
+            chatState.setChatHistory(JSON.parse(oldChat));
             localStorage.removeItem('chatHistory');
           }
         }
@@ -78,11 +83,11 @@ export function useAppState() {
         }
 
         const storedArchived = await localforage.getItem<ArchivedSession[]>('archivedSessions');
-        if (storedArchived) setArchivedSessions(storedArchived);
+        if (storedArchived) chatState.setArchivedSessions(storedArchived);
         else {
           const oldArchived = localStorage.getItem('archivedSessions');
           if (oldArchived) {
-            setArchivedSessions(JSON.parse(oldArchived));
+            chatState.setArchivedSessions(JSON.parse(oldArchived));
             localStorage.removeItem('archivedSessions');
           }
         }
@@ -98,14 +103,6 @@ export function useAppState() {
   const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'code' | 'preview' | 'projects' | 'plan' | 'debugger'>('chat');
   
   // Workspace State
-  const [wsFiles, setWsFilesRaw] = useState<WorkspaceFiles>({});
-  
-  // Save to localforage when wsFiles changes
-  useEffect(() => {
-    if (isStorageLoaded) {
-      localforage.setItem('wsFiles', wsFiles);
-    }
-  }, [wsFiles, isStorageLoaded]);
   const [currentFileName, setCurrentFileName] = useState<string>('');
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string | null>(null);
   const [wsProjectName, setWsProjectName] = useState('Aktif Proje');
@@ -117,7 +114,7 @@ export function useAppState() {
   const [wsHistoryIndex, setWsHistoryIndex] = useState<number>(0);
 
   const setWsFiles = useCallback((newFilesOrUpdater: React.SetStateAction<WorkspaceFiles>) => {
-    setWsFilesRaw(prev => {
+    workspaceState.setWsFilesRaw(prev => {
       const nextFiles = typeof newFilesOrUpdater === 'function' ? newFilesOrUpdater(prev) : newFilesOrUpdater;
       
       // If nothing changed, don't add to history
@@ -139,23 +136,23 @@ export function useAppState() {
       
       return nextFiles;
     });
-  }, [wsHistoryIndex]);
+  }, [wsHistoryIndex, workspaceState]);
 
   const undoWs = useCallback(() => {
     if (wsHistoryIndex > 0) {
       const newIndex = wsHistoryIndex - 1;
       setWsHistoryIndex(newIndex);
-      setWsFilesRaw(wsHistory[newIndex]);
+      workspaceState.setWsFilesRaw(wsHistory[newIndex]);
     }
-  }, [wsHistory, wsHistoryIndex]);
+  }, [wsHistory, wsHistoryIndex, workspaceState]);
 
   const redoWs = useCallback(() => {
     if (wsHistoryIndex < wsHistory.length - 1) {
       const newIndex = wsHistoryIndex + 1;
       setWsHistoryIndex(newIndex);
-      setWsFilesRaw(wsHistory[newIndex]);
+      workspaceState.setWsFilesRaw(wsHistory[newIndex]);
     }
-  }, [wsHistory, wsHistoryIndex]);
+  }, [wsHistory, wsHistoryIndex, workspaceState]);
 
   // Save to localStorage when state changes
   useEffect(() => {
@@ -187,9 +184,9 @@ export function useAppState() {
 
   useEffect(() => {
     if (isStorageLoaded) {
-      localforage.setItem('chatHistory', chatHistory);
+      localforage.setItem('chatHistory', chatState.chatHistory);
     }
-  }, [chatHistory, isStorageLoaded]);
+  }, [chatState.chatHistory, isStorageLoaded]);
 
   useEffect(() => {
     if (isStorageLoaded) {
@@ -199,9 +196,9 @@ export function useAppState() {
 
   useEffect(() => {
     if (isStorageLoaded) {
-      localforage.setItem('archivedSessions', archivedSessions);
+      localforage.setItem('archivedSessions', chatState.archivedSessions);
     }
-  }, [archivedSessions, isStorageLoaded]);
+  }, [chatState.archivedSessions, isStorageLoaded]);
 
   const getActiveContextLimit = useCallback(() => {
     return contextMode === 'auto' ? 20 : customContextLimit;
@@ -221,12 +218,12 @@ export function useAppState() {
         }
       }
     };
-    search(wsFiles);
+    search(workspaceState.wsFiles);
     return results;
-  }, [wsFiles]);
+  }, [workspaceState.wsFiles]);
 
   const archiveCurrentChat = useCallback(() => {
-    const visibleMessages = chatHistory.filter(m => !m.isHidden);
+    const visibleMessages = chatState.chatHistory.filter(m => !m.isHidden);
     if (visibleMessages.length === 0) return;
     
     const firstUserMsg = visibleMessages.find(m => m.sender === 'user');
@@ -239,23 +236,23 @@ export function useAppState() {
       messages: visibleMessages
     };
     
-    setArchivedSessions(prev => [...prev, newArchive]);
-  }, [chatHistory]);
+    chatState.setArchivedSessions(prev => [...prev, newArchive]);
+  }, [chatState.chatHistory]);
 
   const clearChat = useCallback(() => {
     console.log("clearChat called");
     if (window.confirm("Ekran temizlensin mi? (Arşive alınır)")) {
       archiveCurrentChat();
-      setChatHistory([]);
+      chatState.setChatHistory([]);
     }
   }, [archiveCurrentChat]);
 
   const startNewChat = useCallback(() => {
-    setChatHistory([]);
+    chatState.setChatHistory([]);
   }, []);
 
   const openWorkspaceFromChat = useCallback((filesObj: any) => {
-    setWsFiles(prev => {
+    workspaceState.setWsFiles(prev => {
       const newFiles = JSON.parse(JSON.stringify(prev));
       
       // filesObj içindeki yolları ayrıştırıp ağaç yapısına ekle
@@ -281,28 +278,16 @@ export function useAppState() {
       return newFiles;
     });
     
-    setAiContextFiles(prev => {
+    workspaceState.setAiContextFiles(prev => {
       const newSet = new Set(prev);
       Object.keys(filesObj).forEach(f => newSet.add(f));
       return newSet;
     });
 
-    setWsProjectName("Aktif Proje");
+    workspaceState.setWsProjectName("Aktif Proje");
     
     // Find first file
     let firstFile = "";
-    const findFirst = (files: any, currentPath = "") => {
-      for (const [name, node] of Object.entries<any>(files)) {
-        const fullPath = currentPath ? `${currentPath}/${name}` : name;
-        if (node && node.type === 'file') {
-          firstFile = fullPath;
-          return true;
-        } else if (node && node.children && findFirst(node.children, fullPath)) {
-          return true;
-        }
-      }
-      return false;
-    };
     
     // filesObj düz bir obje olduğu için ilk dosyayı doğrudan alabiliriz
     const keys = Object.keys(filesObj);
@@ -310,7 +295,7 @@ export function useAppState() {
       firstFile = keys[0];
     }
     
-    if (firstFile) setCurrentFileName(firstFile);
+    if (firstFile) workspaceState.setCurrentFileName(firstFile);
     if (window.innerWidth < 768) {
       if (filesObj['gorev_plani.md']) {
         setActiveTab('plan');
@@ -327,7 +312,7 @@ export function useAppState() {
   const openProjectFromList = useCallback((id: string) => {
     const project = savedProjects.find(p => p.id === id);
     if (project) {
-      setWsFiles(project.files);
+      workspaceState.setWsFiles(project.files);
       
       // Flatten files for context
       const flatFiles: string[] = [];
@@ -339,9 +324,9 @@ export function useAppState() {
       };
       flatten(project.files);
       
-      setAiContextFiles(new Set(flatFiles));
-      setWsProjectName(project.title);
-      setCurrentWorkspaceId(project.id);
+      workspaceState.setAiContextFiles(new Set(flatFiles));
+      workspaceState.setWsProjectName(project.title);
+      workspaceState.setCurrentWorkspaceId(project.id);
       
       // Find first file
       let firstFile = "";
@@ -358,7 +343,7 @@ export function useAppState() {
       };
       findFirst(project.files);
       
-      if (firstFile) setCurrentFileName(firstFile);
+      if (firstFile) workspaceState.setCurrentFileName(firstFile);
       setActiveTab('code');
     }
   }, [savedProjects]);
@@ -367,32 +352,19 @@ export function useAppState() {
     theme, setTheme,
     contextMode, setContextMode,
     customContextLimit, setCustomContextLimit,
-    chatHistory, setChatHistory,
+    ...chatState,
+    ...workspaceState,
     savedProjects, setSavedProjects,
-    archivedSessions, setArchivedSessions,
     activeTab, setActiveTab,
-    wsFiles, setWsFiles,
-    currentFileName, setCurrentFileName,
-    currentWorkspaceId, setCurrentWorkspaceId,
-    wsProjectName, setWsProjectName,
-    pendingPrompt, setPendingPrompt,
-    aiContextFiles, setAiContextFiles,
     models,
     providerKeys, setProviderKey,
     activeModelId, setActiveModelId,
     activeModel,
     getActiveContextLimit,
     searchContext,
-    clearChat,
-    startNewChat,
     openWorkspaceFromChat,
     openProjectFromList,
     deleteProject: (id: string) => setSavedProjects(prev => prev.filter(p => p.id !== id)),
-    deleteArchivedSession: (id: string) => setArchivedSessions(prev => prev.filter(s => s.id !== id)),
-    undoWs,
-    redoWs,
-    canUndoWs: wsHistoryIndex > 0,
-    canRedoWs: wsHistoryIndex < wsHistory.length - 1,
     githubState, setGithubState
   };
 }

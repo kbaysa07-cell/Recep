@@ -1,4 +1,5 @@
-import { WorkspaceFiles, FileNode } from '../types';
+import { WorkspaceFiles, FileNode } from '../types/workspace.types';
+
 
 /**
  * Finds a node in the workspace file tree by its path.

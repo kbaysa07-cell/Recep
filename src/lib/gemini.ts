@@ -1,5 +1,8 @@
 import { GoogleGenAI, Type, FunctionDeclaration, ThinkingLevel } from "@google/genai";
-import { Message, WorkspaceFiles, AIModel } from "../types";
+import { Message } from "../types/chat.types";
+import { WorkspaceFiles } from "../types/workspace.types";
+import { AIModel } from "../types/ai.types";
+
 import { flattenWorkspace } from "./workspaceUtils";
 
 const editFileDeclaration: FunctionDeclaration = {

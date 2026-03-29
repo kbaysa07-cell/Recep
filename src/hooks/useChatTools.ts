@@ -1,4 +1,5 @@
-import { WorkspaceFiles, FileNode } from '../types';
+import { WorkspaceFiles, FileNode } from '../types/workspace.types';
+
 import { Activity } from './useActivity';
 import { getEmbedding, cosineSimilarity } from '../services/embeddingService';
 import { analyzeAndFix } from '../services/selfHealingService';

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && npx esbuild server.ts --platform=node --format=esm --outfile=dist/server.js --bundle --external:express --external:cors --external:dotenv --external:vite",
+    "build": "vite build && npx esbuild server.ts --platform=node --format=esm --outfile=dist/server.js --bundle --external:express --external:cors --external:dotenv --external:vite --external:isomorphic-git --external:socket.io",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",

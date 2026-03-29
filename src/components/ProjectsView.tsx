@@ -1,5 +1,7 @@
 import React from 'react';
-import { Project, WorkspaceFiles } from '../types';
+import { Project } from '../types/workspace.types';
+import { WorkspaceFiles } from '../types/workspace.types';
+
 import { FolderOpen, Download, Trash2 } from 'lucide-react';
 import JSZip from 'jszip';
 

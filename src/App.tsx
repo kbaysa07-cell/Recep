@@ -25,11 +25,15 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isGitHubModalOpen, setIsGitHubModalOpen] = useState(false);
   const [isTaskMode, setIsTaskMode] = useState(false);
-  const [isChatPanelOpen, setIsChatPanelOpen] = useState(true);
-  const [isFilesPanelOpen, setIsFilesPanelOpen] = useState(true);
-  const [isTerminalPanelOpen, setIsTerminalPanelOpen] = useState(true);
   
-  const { isMobile, isChatOpen, setIsChatOpen, chatPosition, setChatPosition } = useAppLayout();
+  const { 
+    isMobile, 
+    chatPosition, 
+    setChatPosition,
+    isChatPanelOpen, setIsChatPanelOpen,
+    isFilesPanelOpen, setIsFilesPanelOpen,
+    isTerminalPanelOpen, setIsTerminalPanelOpen
+  } = useAppLayout();
   const { activity, setActivity } = useActivity();
   const tools = useChatTools(state.wsFiles, state.setWsFiles, setActivity, state.setGithubState);
 

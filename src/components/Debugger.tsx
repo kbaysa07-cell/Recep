@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Bug, AlertTriangle, Zap, ShieldAlert, Search } from 'lucide-react';
-import { WorkspaceFiles } from '../types';
+import { WorkspaceFiles } from '../types/workspace.types';
+
 import { useChatTools } from '../hooks/useChatTools';
 import { Activity } from '../hooks/useActivity';
 

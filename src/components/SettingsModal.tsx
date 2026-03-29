@@ -2,7 +2,8 @@ import React from 'react';
 import { X, Sun, Moon, Settings, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
-import { AIModel } from '../types';
+import { AIModel } from '../types/ai.types';
+
 
 interface SettingsModalProps {
   isOpen: boolean;

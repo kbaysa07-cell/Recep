@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { FileText, FileJson, FileCode, Folder, FolderOpen, ChevronRight, ChevronDown, Trash2, Plus, Bot } from 'lucide-react';
-import { FileNode } from '../types';
+import { FileNode } from '../types/workspace.types';
+
 import { cn } from '../lib/utils';
 
 interface FileTreeProps {

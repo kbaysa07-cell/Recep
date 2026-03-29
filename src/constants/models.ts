@@ -1,4 +1,5 @@
-import { AIModel } from '../types';
+import { AIModel } from '../types/ai.types';
+
 
 export const GEMINI_MODELS: AIModel[] = [
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Complex Tasks)', provider: 'google', isDefault: true },
