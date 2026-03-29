@@ -1,21 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Message, Project, ArchivedSession, WorkspaceFiles, AIModel } from '../types';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import localforage from 'localforage';
+import { Message, Project, ArchivedSession, WorkspaceFiles, AIModel, ProviderConfig, GithubState } from '../types';
 import { generateId } from './utils';
-import { VectorStore } from '../services/vectorStore';
-
-const vectorStore = new VectorStore();
-
-const DEFAULT_MODELS: AIModel[] = [
-  { id: 'auto', name: 'Auto (Akıllı Seçim)', provider: 'auto', isDefault: true },
-  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', provider: 'google', isDefault: true },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', provider: 'google', isDefault: true },
-  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite', provider: 'google', isDefault: true },
-  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', isDefault: true },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', isDefault: true },
-  { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', provider: 'custom', baseUrl: 'https://api.anthropic.com/v1/messages', isDefault: true },
-  { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'custom', baseUrl: 'https://api.anthropic.com/v1/messages', isDefault: true },
-  { id: 'grok-beta', name: 'Grok Beta', provider: 'xai', baseUrl: 'https://api.x.ai/v1/chat/completions', isDefault: true }
-];
+import { DEFAULT_MODELS, GEMINI_MODELS, OPENAI_MODELS, ANTHROPIC_MODELS, XAI_MODELS } from '../constants/models';
 
 export function useAppState() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => 
@@ -28,16 +15,28 @@ export function useAppState() {
     parseInt(localStorage.getItem('customContextLimit') || '20', 10)
   );
 
-  // Models state
-  const [models, setModels] = useState<AIModel[]>(() => {
+  const [providerKeys, setProviderKeys] = useState<Record<string, string>>(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem('aiModels') || '[]');
-      if (saved.length > 0) return saved;
-      return DEFAULT_MODELS;
+      return JSON.parse(localStorage.getItem('providerKeys') || '{}');
     } catch {
-      return DEFAULT_MODELS;
+      return {};
     }
   });
+
+  const [githubState, setGithubState] = useState<GithubState | null>(null);
+
+  const setProviderKey = (provider: string, key: string) => {
+    setProviderKeys(prev => ({ ...prev, [provider]: key }));
+  };
+
+  const models = useMemo(() => {
+    let availableModels = [...DEFAULT_MODELS];
+    if (providerKeys['google']) availableModels.push(...GEMINI_MODELS);
+    if (providerKeys['openai']) availableModels.push(...OPENAI_MODELS);
+    if (providerKeys['anthropic']) availableModels.push(...ANTHROPIC_MODELS);
+    if (providerKeys['xai']) availableModels.push(...XAI_MODELS);
+    return availableModels;
+  }, [providerKeys]);
   
   const [activeModelId, setActiveModelId] = useState<string>(() => {
     return localStorage.getItem('activeModelId') || 'gemini-3.1-pro-preview';
@@ -45,47 +44,73 @@ export function useAppState() {
 
   const activeModel = models.find(m => m.id === activeModelId) || models[0];
   
-  const [chatHistory, setChatHistory] = useState<Message[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('chatHistory') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  // Storage states
+  const [isStorageLoaded, setIsStorageLoaded] = useState(false);
+  const [chatHistory, setChatHistory] = useState<Message[]>([]);
+  const [savedProjects, setSavedProjects] = useState<Project[]>([]);
+  const [archivedSessions, setArchivedSessions] = useState<ArchivedSession[]>([]);
 
-  const indexFile = useCallback(async (path: string, content: string) => {
-    await vectorStore.indexFile(path, content);
-  }, []);
+  // Load data asynchronously from localforage
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const storedFiles = await localforage.getItem<WorkspaceFiles>('wsFiles');
+        if (storedFiles) setWsFilesRaw(storedFiles);
 
-  const searchContext = useCallback(async (query: string) => {
-    return await vectorStore.search(query);
+        const storedChat = await localforage.getItem<Message[]>('chatHistory');
+        if (storedChat) setChatHistory(storedChat);
+        else {
+          const oldChat = localStorage.getItem('chatHistory');
+          if (oldChat) {
+            setChatHistory(JSON.parse(oldChat));
+            localStorage.removeItem('chatHistory');
+          }
+        }
+
+        const storedProjects = await localforage.getItem<Project[]>('wsProjects');
+        if (storedProjects) setSavedProjects(storedProjects);
+        else {
+          const oldProjects = localStorage.getItem('wsProjects');
+          if (oldProjects) {
+            setSavedProjects(JSON.parse(oldProjects));
+            localStorage.removeItem('wsProjects');
+          }
+        }
+
+        const storedArchived = await localforage.getItem<ArchivedSession[]>('archivedSessions');
+        if (storedArchived) setArchivedSessions(storedArchived);
+        else {
+          const oldArchived = localStorage.getItem('archivedSessions');
+          if (oldArchived) {
+            setArchivedSessions(JSON.parse(oldArchived));
+            localStorage.removeItem('archivedSessions');
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load from localforage", e);
+      } finally {
+        setIsStorageLoaded(true);
+      }
+    };
+    loadData();
   }, []);
-  
-  const [savedProjects, setSavedProjects] = useState<Project[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('wsProjects') || '[]');
-    } catch {
-      return [];
-    }
-  });
-  
-  const [archivedSessions, setArchivedSessions] = useState<ArchivedSession[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('archivedSessions') || '[]');
-    } catch {
-      return [];
-    }
-  });
 
   const [activeTab, setActiveTab] = useState<'chat' | 'files' | 'code' | 'preview' | 'projects' | 'plan' | 'debugger'>('chat');
   
   // Workspace State
   const [wsFiles, setWsFilesRaw] = useState<WorkspaceFiles>({});
+  
+  // Save to localforage when wsFiles changes
+  useEffect(() => {
+    if (isStorageLoaded) {
+      localforage.setItem('wsFiles', wsFiles);
+    }
+  }, [wsFiles, isStorageLoaded]);
   const [currentFileName, setCurrentFileName] = useState<string>('');
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string | null>(null);
   const [wsProjectName, setWsProjectName] = useState('Aktif Proje');
-  const [aiContextFiles, setAiContextFiles] = useState<Set<string>>(new Set());
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  const [aiContextFiles, setAiContextFiles] = useState<Set<string>>(new Set());
 
   // History State for Undo/Redo
   const [wsHistory, setWsHistory] = useState<WorkspaceFiles[]>([{}]);
@@ -134,6 +159,10 @@ export function useAppState() {
 
   // Save to localStorage when state changes
   useEffect(() => {
+    localStorage.setItem('providerKeys', JSON.stringify(providerKeys));
+  }, [providerKeys]);
+
+  useEffect(() => {
     localStorage.setItem('appTheme', theme);
     document.documentElement.setAttribute('data-theme', theme);
     if (theme === 'dark') {
@@ -157,20 +186,44 @@ export function useAppState() {
   }, [activeModelId]);
 
   useEffect(() => {
-    localStorage.setItem('chatHistory', JSON.stringify(chatHistory));
-  }, [chatHistory]);
+    if (isStorageLoaded) {
+      localforage.setItem('chatHistory', chatHistory);
+    }
+  }, [chatHistory, isStorageLoaded]);
 
   useEffect(() => {
-    localStorage.setItem('wsProjects', JSON.stringify(savedProjects));
-  }, [savedProjects]);
+    if (isStorageLoaded) {
+      localforage.setItem('wsProjects', savedProjects);
+    }
+  }, [savedProjects, isStorageLoaded]);
 
   useEffect(() => {
-    localStorage.setItem('archivedSessions', JSON.stringify(archivedSessions));
-  }, [archivedSessions]);
+    if (isStorageLoaded) {
+      localforage.setItem('archivedSessions', archivedSessions);
+    }
+  }, [archivedSessions, isStorageLoaded]);
 
   const getActiveContextLimit = useCallback(() => {
     return contextMode === 'auto' ? 20 : customContextLimit;
   }, [contextMode, customContextLimit]);
+
+  const searchContext = useCallback(async (query: string): Promise<string[]> => {
+    const results: string[] = [];
+    const search = (files: WorkspaceFiles, path: string = "") => {
+      for (const [name, node] of Object.entries<any>(files)) {
+        const fullPath = path ? `${path}/${name}` : name;
+        if (node.type === 'file') {
+          if (name.toLowerCase().includes(query.toLowerCase()) || (node.content && node.content.toLowerCase().includes(query.toLowerCase()))) {
+            results.push(fullPath);
+          }
+        } else if (node.children) {
+          search(node.children, fullPath);
+        }
+      }
+    };
+    search(wsFiles);
+    return results;
+  }, [wsFiles]);
 
   const archiveCurrentChat = useCallback(() => {
     const visibleMessages = chatHistory.filter(m => !m.isHidden);
@@ -201,8 +254,32 @@ export function useAppState() {
     setChatHistory([]);
   }, []);
 
-  const openWorkspaceFromChat = useCallback((filesObj: WorkspaceFiles) => {
-    setWsFiles(prev => ({ ...prev, ...filesObj }));
+  const openWorkspaceFromChat = useCallback((filesObj: any) => {
+    setWsFiles(prev => {
+      const newFiles = JSON.parse(JSON.stringify(prev));
+      
+      // filesObj içindeki yolları ayrıştırıp ağaç yapısına ekle
+      for (const [path, content] of Object.entries(filesObj)) {
+        const parts = path.split('/').filter(Boolean);
+        let current: any = newFiles;
+        
+        for (let i = 0; i < parts.length - 1; i++) {
+          const part = parts[i];
+          if (!current[part]) {
+            current[part] = { type: 'folder', name: part, children: {} };
+          }
+          if (!current[part].children) {
+            current[part].children = {};
+          }
+          current = current[part].children;
+        }
+        
+        const lastPart = parts[parts.length - 1];
+        current[lastPart] = { type: 'file', name: lastPart, content };
+      }
+      
+      return newFiles;
+    });
     
     setAiContextFiles(prev => {
       const newSet = new Set(prev);
@@ -214,18 +291,24 @@ export function useAppState() {
     
     // Find first file
     let firstFile = "";
-    const findFirst = (files: WorkspaceFiles) => {
-      for (const [name, node] of Object.entries(files)) {
-        if (node.type === 'file') {
-          firstFile = name;
+    const findFirst = (files: any, currentPath = "") => {
+      for (const [name, node] of Object.entries<any>(files)) {
+        const fullPath = currentPath ? `${currentPath}/${name}` : name;
+        if (node && node.type === 'file') {
+          firstFile = fullPath;
           return true;
-        } else if (node.children && findFirst(node.children)) {
+        } else if (node && node.children && findFirst(node.children, fullPath)) {
           return true;
         }
       }
       return false;
     };
-    findFirst(filesObj);
+    
+    // filesObj düz bir obje olduğu için ilk dosyayı doğrudan alabiliriz
+    const keys = Object.keys(filesObj);
+    if (keys.length > 0) {
+      firstFile = keys[0];
+    }
     
     if (firstFile) setCurrentFileName(firstFile);
     if (window.innerWidth < 768) {
@@ -239,7 +322,7 @@ export function useAppState() {
         setActiveTab('plan');
       }
     }
-  }, [wsFiles]);
+  }, []);
 
   const openProjectFromList = useCallback((id: string) => {
     const project = savedProjects.find(p => p.id === id);
@@ -249,7 +332,7 @@ export function useAppState() {
       // Flatten files for context
       const flatFiles: string[] = [];
       const flatten = (files: WorkspaceFiles) => {
-        for (const [name, node] of Object.entries(files)) {
+        for (const [name, node] of Object.entries<any>(files)) {
           if (node.type === 'file') flatFiles.push(name);
           else if (node.children) flatten(node.children);
         }
@@ -263,7 +346,7 @@ export function useAppState() {
       // Find first file
       let firstFile = "";
       const findFirst = (files: WorkspaceFiles) => {
-        for (const [name, node] of Object.entries(files)) {
+        for (const [name, node] of Object.entries<any>(files)) {
           if (node.type === 'file') {
             firstFile = name;
             return true;
@@ -292,12 +375,14 @@ export function useAppState() {
     currentFileName, setCurrentFileName,
     currentWorkspaceId, setCurrentWorkspaceId,
     wsProjectName, setWsProjectName,
-    aiContextFiles, setAiContextFiles,
     pendingPrompt, setPendingPrompt,
-    models, setModels,
+    aiContextFiles, setAiContextFiles,
+    models,
+    providerKeys, setProviderKey,
     activeModelId, setActiveModelId,
     activeModel,
     getActiveContextLimit,
+    searchContext,
     clearChat,
     startNewChat,
     openWorkspaceFromChat,
@@ -308,7 +393,6 @@ export function useAppState() {
     redoWs,
     canUndoWs: wsHistoryIndex > 0,
     canRedoWs: wsHistoryIndex < wsHistory.length - 1,
-    indexFile,
-    searchContext
+    githubState, setGithubState
   };
 }

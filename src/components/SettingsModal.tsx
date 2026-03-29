@@ -1,5 +1,6 @@
 import React from 'react';
-import { X, Sun, Moon, Settings } from 'lucide-react';
+import { X, Sun, Moon, Settings, Save } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { AIModel } from '../types';
 
@@ -9,9 +10,10 @@ interface SettingsModalProps {
   theme: 'light' | 'dark';
   setTheme: (theme: 'light' | 'dark') => void;
   models: AIModel[];
-  setModels: React.Dispatch<React.SetStateAction<AIModel[]>>;
   activeModelId: string;
   setActiveModelId: (id: string) => void;
+  providerKeys: Record<string, string>;
+  setProviderKey: (provider: string, key: string) => void;
 }
 
 export function SettingsModal({
@@ -20,17 +22,14 @@ export function SettingsModal({
   theme,
   setTheme,
   models,
-  setModels,
   activeModelId,
-  setActiveModelId
+  setActiveModelId,
+  providerKeys,
+  setProviderKey
 }: SettingsModalProps) {
   if (!isOpen) return null;
 
   const activeModel = models.find(m => m.id === activeModelId) || models[0];
-
-  const updateApiKey = (key: string) => {
-    setModels(prev => prev.map(m => m.id === activeModelId ? { ...m, apiKey: key } : m));
-  };
 
   return (
     <div className="fixed inset-0 bg-black/50 dark:bg-black/70 z-[600] flex justify-center items-center p-4 transition-colors duration-200">
@@ -56,14 +55,26 @@ export function SettingsModal({
         </div>
 
         <div className="mb-4">
-          <label className="block mb-1.5 text-[13px] font-semibold text-gray-900 dark:text-gray-100 transition-colors duration-200">API Key ({activeModel.name})</label>
+          <label className="block mb-1.5 text-[13px] font-semibold text-gray-900 dark:text-gray-100 transition-colors duration-200">API Key ({activeModel.provider.toUpperCase()})</label>
           <input 
             type="password" 
-            placeholder="API Anahtarınızı buraya girin" 
-            value={activeModel.apiKey || ''}
-            onChange={e => updateApiKey(e.target.value)}
+            placeholder={`${activeModel.provider.toUpperCase()} API Anahtarınızı buraya girin`} 
+            value={providerKeys[activeModel.provider] || ''}
+            onChange={e => setProviderKey(activeModel.provider, e.target.value)}
             className="w-full p-2.5 border border-gray-300 dark:border-[#3e4042] rounded-lg bg-white dark:bg-[#3a3b3c] text-gray-900 dark:text-gray-100 outline-none text-[13px] transition-colors duration-200 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
           />
+        </div>
+
+        <div className="mb-4">
+          <label className="block mb-1.5 text-[13px] font-semibold text-gray-900 dark:text-gray-100 transition-colors duration-200">GitHub Token (Opsiyonel)</label>
+          <input 
+            type="password" 
+            placeholder="GitHub Personal Access Token (PAT)" 
+            value={providerKeys['github'] || ''}
+            onChange={e => setProviderKey('github', e.target.value)}
+            className="w-full p-2.5 border border-gray-300 dark:border-[#3e4042] rounded-lg bg-white dark:bg-[#3a3b3c] text-gray-900 dark:text-gray-100 outline-none text-[13px] transition-colors duration-200 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          />
+          <span className="text-[11px] text-gray-500 dark:text-[#888] mt-1 block">GitHub depolarını klonlamak ve işlem yapmak için gereklidir.</span>
         </div>
 
         <div className="mb-4">
@@ -85,10 +96,13 @@ export function SettingsModal({
         </div>
 
         <button
-          onClick={onClose}
-          className="w-full bg-blue-600 text-white border-none p-3 rounded-xl font-bold cursor-pointer text-[14px] hover:bg-blue-700 transition-colors shadow-sm mt-2"
+          onClick={() => {
+            toast.success("Ayarlar ve API anahtarları kaydedildi!");
+            onClose();
+          }}
+          className="w-full bg-blue-600 text-white border-none p-3 rounded-xl font-bold cursor-pointer text-[14px] hover:bg-blue-700 transition-colors shadow-sm mt-2 flex items-center justify-center gap-2"
         >
-          Kapat
+          <Save className="w-4 h-4" /> Kaydet ve Kapat
         </button>
       </div>
     </div>

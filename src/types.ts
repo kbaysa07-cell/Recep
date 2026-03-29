@@ -1,9 +1,12 @@
+import { Activity } from './hooks/useActivity';
+
 export type Role = 'user' | 'model';
 
 export interface Message {
   id: string;
   text: string;
   thinking?: string;
+  activity?: Activity[];
   sender: Role;
   isRaw: boolean;
   isHidden: boolean;
@@ -37,9 +40,20 @@ export interface AIModel {
   id: string;
   name: string;
   provider: 'google' | 'openai' | 'anthropic' | 'xai' | 'custom' | 'auto';
-  apiKey?: string;
   baseUrl?: string;
   isDefault?: boolean;
+}
+
+export interface ProviderConfig {
+  provider: 'google' | 'openai' | 'anthropic' | 'xai' | 'custom';
+  apiKey: string;
+}
+
+export interface GithubState {
+  owner: string;
+  repo: string;
+  branch: string;
+  token?: string;
 }
 
 export type AppState = 

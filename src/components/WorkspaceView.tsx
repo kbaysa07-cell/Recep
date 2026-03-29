@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Save, Download, Play, Eye, EyeOff, FileText, FileJson, FileCode, MessageSquare, Plus, Trash2, Folder, Code, MonitorPlay, CheckSquare, Bug, PanelLeftClose, PanelLeftOpen, Undo, Redo } from 'lucide-react';
 import JSZip from 'jszip';
-import { FileTree } from './FileTree';
 import { TaskBoard } from './TaskBoard';
 import { Debugger } from './Debugger';
 import { FileNode, WorkspaceFiles } from '../types';
+import { findNode, cloneWorkspace, flattenWorkspace, ensureDirectory } from '../lib/workspaceUtils';
+import { Activity } from '../hooks/useActivity';
 import { cn } from '../lib/utils';
 import * as Resizable from 'react-resizable-panels';
+import { useChatTools } from '../hooks/useChatTools';
+
 const { Panel, Group, Separator: PanelResizeHandle } = Resizable as any;
 import CodeMirror from '@uiw/react-codemirror';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
@@ -15,34 +18,6 @@ import { javascript } from '@codemirror/lang-javascript';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { toast } from 'sonner';
-
-// Helper to find a node by path
-const findNode = (files: WorkspaceFiles, path: string): FileNode | null => {
-  const parts = path.split('/').filter(Boolean);
-  let current: any = files;
-  for (const part of parts) {
-    if (current[part]) {
-      current = current[part];
-    } else if (current.children && current.children[part]) {
-      current = current.children[part];
-    } else {
-      return null;
-    }
-  }
-  return current;
-};
-
-// Helper to delete a node
-const deleteNode = (files: WorkspaceFiles, path: string): WorkspaceFiles => {
-  const parts = path.split('/').filter(Boolean);
-  const newFiles = { ...files };
-  let current: any = newFiles;
-  for (let i = 0; i < parts.length - 1; i++) {
-    current = current[parts[i]].children;
-  }
-  delete current[parts[parts.length - 1]];
-  return newFiles;
-};
 
 interface WorkspaceViewProps {
   activeTab: 'files' | 'code' | 'preview' | 'plan' | 'debugger';
@@ -65,8 +40,13 @@ interface WorkspaceViewProps {
   redoWs: () => void;
   canUndoWs: boolean;
   canRedoWs: boolean;
+  hideFileExplorer?: boolean;
+  setActivity: React.Dispatch<React.SetStateAction<Activity[]>>;
+  providerKeys?: Record<string, string>;
+  onOpenGitHub?: () => void;
 }
 
+// WorkspaceView component
 export function WorkspaceView({
   activeTab,
   setActiveTab,
@@ -87,12 +67,16 @@ export function WorkspaceView({
   undoWs,
   redoWs,
   canUndoWs,
-  canRedoWs
+  canRedoWs,
+  hideFileExplorer = false,
+  setActivity,
+  providerKeys = {},
+  onOpenGitHub
 }: WorkspaceViewProps) {
   const [consoleLogs, setConsoleLogs] = useState<{level: string, msg: string}[]>([]);
   const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(false);
-  const [isFileExplorerOpen, setIsFileExplorerOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
+  const tools = useChatTools(wsFiles, setWsFiles, setActivity);
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -135,9 +119,16 @@ export function WorkspaceView({
 
   useEffect(() => {
     if (activeTab === 'files' && !isMobile) {
-      setIsFileExplorerOpen(true);
+      // Do nothing, handled by App.tsx
     }
   }, [activeTab, isMobile]);
+
+  useEffect(() => {
+    (window as any).onAskAIToFix = onAskAIToFix;
+    return () => {
+      delete (window as any).onAskAIToFix;
+    };
+  }, [onAskAIToFix]);
 
   useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
@@ -183,14 +174,12 @@ export function WorkspaceView({
     
     // Helper to add files to zip
     const addFilesToZip = (files: WorkspaceFiles, path: string = "") => {
-      for (const [name, node] of Object.entries(files)) {
-        const fullPath = path ? `${path}/${name}` : name;
+      const flatFiles = flattenWorkspace(files);
+      flatFiles.forEach(({ path, node }) => {
         if (node.type === 'file') {
-          zip.file(fullPath, node.content || '');
-        } else if (node.children) {
-          addFilesToZip(node.children, fullPath);
+          zip.file(path, node.content || '');
         }
-      }
+      });
     };
 
     addFilesToZip(wsFiles);
@@ -204,72 +193,23 @@ export function WorkspaceView({
     document.body.removeChild(link);
   };
 
-  const createNewFile = () => {
-    const path = prompt("Dosya veya klasör yolu (örn: index.js veya folder/):");
-    if (!path) return;
-
-    const parts = path.split('/').filter(Boolean);
-    const isFolder = path.endsWith('/');
-    
-    setWsFiles(prev => {
-      const newFiles = { ...prev };
-      let current: any = newFiles;
-      
-      for (let i = 0; i < parts.length - 1; i++) {
-        const part = parts[i];
-        if (!current[part]) {
-          current[part] = { type: 'folder', name: part, children: {} };
-        }
-        current = current[part].children;
-      }
-      
-      const lastPart = parts[parts.length - 1];
-      if (isFolder) {
-        if (!current[lastPart]) {
-          current[lastPart] = { type: 'folder', name: lastPart, children: {} };
-        }
-      } else {
-        if (!current[lastPart]) {
-          current[lastPart] = { type: 'file', name: lastPart, content: '' };
-        }
-      }
-      return newFiles;
-    });
-    
-    if (!isFolder) {
-      setCurrentFileName(path);
-      setActiveTab('code');
-      toast.success(`Dosya oluşturuldu: ${path}`);
-    } else {
-      toast.success(`Klasör oluşturuldu: ${path}`);
-    }
-  };
-
   const runPreview = () => {
     setConsoleLogs([]);
-    
-    // Helper to flatten files
-    const flattenFiles = (files: WorkspaceFiles, path: string = "", result: { [name: string]: string } = {}) => {
-      for (const [key, node] of Object.entries(files)) {
-        const fullPath = path ? `${path}/${key}` : key;
-        if (node.type === 'file') {
-          result[fullPath] = node.content || '';
-        } else if (node.children) {
-          flattenFiles(node.children, fullPath, result);
-        }
+    const flatFiles = flattenWorkspace(wsFiles);
+    const flatFilesMap: { [name: string]: string } = {};
+    flatFiles.forEach(({ path, node }) => {
+      if (node.type === 'file') {
+        flatFilesMap[path] = node.content || '';
       }
-      return result;
-    };
-
-    const flatFiles = flattenFiles(wsFiles);
+    });
     
     // Find html file in flatFiles
-    let htmlKey = Object.keys(flatFiles).find(k => k.endsWith('.html')) || 'index.html';
-    let finalHtml = flatFiles[htmlKey] || '<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<div id="app"></div>\n</body>\n</html>';
+    let htmlKey = Object.keys(flatFilesMap).find(k => k.endsWith('.html')) || 'index.html';
+    let finalHtml = flatFilesMap[htmlKey] || '<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n<div id="app"></div>\n</body>\n</html>';
 
     let allCss = "";
     let allJs = "";
-    for (let [key, content] of Object.entries(flatFiles)) {
+    for (let [key, content] of Object.entries(flatFilesMap)) {
       if (key.endsWith('.css')) allCss += content + "\n";
       if (key.endsWith('.js') && key !== htmlKey) allJs += content + "\n";
     }
@@ -304,6 +244,26 @@ export function WorkspaceView({
     // Check if we need Tailwind CSS
     const needsTailwind = allJs.includes('className=') || finalHtml.includes('class=');
     
+    // Extract bare imports for dynamic package loading via esm.sh
+    const bareImports = new Set<string>();
+    const importRegex = /(?:from\s+|import\s*\(?\s*)['"]([^.\/][^'"]+)['"]/g;
+    let match;
+    while ((match = importRegex.exec(allJs)) !== null) {
+      const pkg = match[1];
+      if (pkg !== 'react' && pkg !== 'react-dom' && pkg !== 'react-dom/client') {
+        bareImports.add(pkg);
+      }
+    }
+    
+    let importMapScript = '';
+    if (bareImports.size > 0) {
+      const importsObj: Record<string, string> = {};
+      bareImports.forEach(pkg => {
+        importsObj[pkg] = `https://esm.sh/${pkg}?bundle`;
+      });
+      importMapScript = `\n<script type="importmap">\n${JSON.stringify({ imports: importsObj }, null, 2)}\n</script>\n`;
+    }
+    
     let reactScripts = '';
     if (needsReact) {
       reactScripts = `
@@ -329,9 +289,9 @@ export function WorkspaceView({
       finalHtml = `<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n${finalHtml}\n</body>\n</html>`;
     }
     if (finalHtml.includes('</head>')) {
-      finalHtml = finalHtml.replace('</head>', `${mobileFixScript}${tailwindScript}${reactScripts}<style>${allCss}</style></head>`);
+      finalHtml = finalHtml.replace('</head>', `${importMapScript}${mobileFixScript}${tailwindScript}${reactScripts}<style>${allCss}</style></head>`);
     } else {
-      finalHtml = `${mobileFixScript}${tailwindScript}${reactScripts}<style>${allCss}</style>` + finalHtml;
+      finalHtml = `${importMapScript}${mobileFixScript}${tailwindScript}${reactScripts}<style>${allCss}</style>` + finalHtml;
     }
     
     if (allJs.trim() !== '') {
@@ -370,70 +330,10 @@ export function WorkspaceView({
 
   const errorCount = consoleLogs.filter(l => l.level === 'error').length;
 
-  const renderFileExplorer = () => (
-    <div className="flex flex-col h-full bg-gray-50 dark:bg-[#0f0f0f] border-r border-gray-200 dark:border-[#262626] transition-colors duration-200">
-      <div className="p-3 flex justify-between items-center border-b border-gray-200 dark:border-[#262626] transition-colors duration-200">
-        <span className="text-[11px] font-bold text-gray-500 dark:text-[#888] uppercase tracking-wider">Dosyalar</span>
-        <div className="flex gap-1">
-          <button onClick={undoWs} disabled={!canUndoWs} className={`p-1.5 rounded transition-colors ${canUndoWs ? 'text-gray-500 dark:text-[#888] hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-[#262626]' : 'text-gray-300 dark:text-[#444] cursor-not-allowed'}`} title="Geri Al (Undo)">
-            <Undo className="w-4 h-4" />
-          </button>
-          <button onClick={redoWs} disabled={!canRedoWs} className={`p-1.5 rounded transition-colors ${canRedoWs ? 'text-gray-500 dark:text-[#888] hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-[#262626]' : 'text-gray-300 dark:text-[#444] cursor-not-allowed'}`} title="İleri Al (Redo)">
-            <Redo className="w-4 h-4" />
-          </button>
-          <div className="w-px h-4 bg-gray-300 dark:bg-[#262626] mx-1 self-center transition-colors duration-200"></div>
-          <button onClick={createNewFile} className="p-1.5 hover:bg-gray-200 dark:hover:bg-[#262626] rounded text-gray-500 dark:text-[#888] hover:text-gray-900 dark:hover:text-white transition-colors" title="Yeni Dosya/Klasör">
-            <Plus className="w-4 h-4" />
-          </button>
-          <button onClick={() => setIsFileExplorerOpen(false)} className="p-1.5 hover:bg-gray-200 dark:hover:bg-[#262626] rounded text-gray-500 dark:text-[#888] hover:text-gray-900 dark:hover:text-white transition-colors md:hidden" title="Kapat">
-            <PanelLeftClose className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto p-2">
-        {Object.entries(wsFiles).map(([fileName, node]) => (
-          <FileTree 
-            key={fileName} 
-            node={node} 
-            path={fileName} 
-            onSelect={(path) => {
-              setCurrentFileName(path);
-              if (isMobile) setActiveTab('code');
-            }}
-            onDelete={(path) => {
-              if (confirm(`'${path}' dosyasını silmek istediğinize emin misiniz?`)) {
-                setWsFiles(prev => deleteNode(prev, path));
-                if (currentFileName === path) {
-                  setCurrentFileName(Object.keys(wsFiles)[0]);
-                }
-                toast.info(`Dosya silindi: ${path}`);
-              }
-            }}
-            onToggleAi={(path) => {
-              setAiContextFiles(prev => {
-                const newSet = new Set(prev);
-                if (newSet.has(path)) newSet.delete(path);
-                else newSet.add(path);
-                return newSet;
-              });
-            }}
-            aiContextFiles={aiContextFiles}
-            currentPath={currentFileName}
-          />
-        ))}
-      </div>
-    </div>
-  );
-
   const renderMainContent = () => (
     <div className="flex-1 flex flex-col h-full bg-white dark:bg-[#1e1e1e] relative transition-colors duration-200">
       {/* Desktop Tabs (Hidden on Mobile) */}
       <div className="hidden md:flex bg-gray-50 dark:bg-[#0f0f0f] border-b border-gray-200 dark:border-[#262626] items-center transition-colors duration-200">
-        {!isFileExplorerOpen && (
-          <button onClick={() => setIsFileExplorerOpen(true)} className="p-2 text-gray-500 dark:text-[#888] hover:text-gray-900 dark:hover:text-white transition-colors border-r border-gray-200 dark:border-[#262626]" title="Dosya Gezginini Aç">
-            <PanelLeftOpen className="w-4 h-4" />
-          </button>
-        )}
         <div className="flex flex-1 overflow-x-auto">
           <button onClick={() => setActiveTab('code')} className={cn("px-4 py-2.5 text-[13px] border-none cursor-pointer flex items-center gap-2 transition-colors", (activeTab === 'code' || activeTab === 'files') ? "bg-white dark:bg-[#1e1e1e] text-gray-900 dark:text-white border-t-2 border-t-blue-500" : "bg-transparent text-gray-500 dark:text-[#888] hover:text-gray-700 dark:hover:text-[#ccc] hover:bg-gray-200 dark:hover:bg-[#1a1a1a]")}>
             <Code className="w-4 h-4" /> Kod
@@ -487,7 +387,7 @@ export function WorkspaceView({
         </div>
       ) : activeTab === 'debugger' ? (
         <div className="flex-1 overflow-hidden">
-          <Debugger wsFiles={wsFiles} />
+          <Debugger wsFiles={wsFiles} setWsFiles={setWsFiles} setActivity={setActivity} />
         </div>
       ) : activeTab === 'code' || (activeTab === 'files' && !isMobile) ? (
         <div className="flex-1 overflow-auto relative">
@@ -524,12 +424,15 @@ export function WorkspaceView({
                   onChange={(value) => {
                     const parts = currentFileName.split('/').filter(Boolean);
                     setWsFiles(prev => {
-                      const newFiles = { ...prev };
-                      let current: any = newFiles;
-                      for (let i = 0; i < parts.length - 1; i++) {
-                        current = current[parts[i]].children;
+                      const newFiles = cloneWorkspace(prev);
+                      const parts = currentFileName.split('/').filter(Boolean);
+                      const parentPath = parts.slice(0, -1).join('/');
+                      const lastPart = parts[parts.length - 1];
+                      
+                      const parent = ensureDirectory(newFiles, parentPath);
+                      if (parent[lastPart]) {
+                        parent[lastPart].content = value;
                       }
-                      current[parts[parts.length - 1]].content = value;
                       return newFiles;
                     });
                   }}
@@ -575,10 +478,10 @@ export function WorkspaceView({
           <iframe ref={iframeRef} className="flex-1 w-full border-none bg-white dark:bg-white transition-colors duration-200" sandbox="allow-scripts allow-modals allow-same-origin" />
           
           {/* Terminal */}
-          <div className={cn("bg-gray-50 dark:bg-[#0a0a0a] border-t border-gray-200 dark:border-[#262626] flex flex-col transition-all duration-300", isTerminalCollapsed ? "h-[34px]" : "h-[150px] md:h-[200px]")}>
+          <div className={cn("bg-gray-50 dark:bg-[#0a0a0a] border-t border-gray-200 dark:border-[#262626] flex flex-col transition-all duration-300 z-10", isTerminalCollapsed ? "h-[34px]" : "h-[150px] md:h-[200px]")}>
             <div className="px-3 py-2 text-[11px] font-bold text-gray-500 dark:text-[#888] bg-gray-100 dark:bg-[#151515] flex justify-between items-center cursor-pointer hover:bg-gray-200 dark:hover:bg-[#1a1a1a] transition-colors" onClick={() => setIsTerminalCollapsed(!isTerminalCollapsed)}>
               <div className="flex items-center gap-2">
-                <span>TERMINAL</span>
+                <span>KONSOL</span>
                 {errorCount > 0 && <span className="bg-red-500/20 text-red-600 dark:text-red-400 px-2 py-0.5 rounded text-[10px]">{errorCount} Hata</span>}
               </div>
               <button className="text-gray-500 dark:text-[#888] hover:text-gray-900 dark:hover:text-white transition-colors">
@@ -586,7 +489,7 @@ export function WorkspaceView({
               </button>
             </div>
             {!isTerminalCollapsed && (
-              <div className="flex-1 overflow-y-auto p-2 font-mono text-[12px] md:text-[13px] bg-white dark:bg-[#0a0a0a]">
+              <div className="flex-1 overflow-y-auto p-2 font-mono text-[12px] md:text-[13px] bg-white dark:bg-[#0a0a0a] flex flex-col gap-1">
                 {consoleLogs.map((log, i) => (
                   <div key={i} className={cn("py-1.5 border-b border-gray-100 dark:border-[#262626] break-words", log.level === 'error' ? 'text-red-600 dark:text-red-400' : log.level === 'warn' ? 'text-yellow-600 dark:text-yellow-400' : 'text-green-600 dark:text-green-400')}>
                     <div className="flex justify-between items-start">
@@ -603,6 +506,7 @@ export function WorkspaceView({
                     </div>
                   </div>
                 ))}
+                {consoleLogs.length === 0 && <div className="text-gray-400 dark:text-[#555] italic">Konsol çıktısı yok...</div>}
               </div>
             )}
           </div>
@@ -634,21 +538,45 @@ export function WorkspaceView({
         {isMobile ? (
           // Mobile Layout
           <>
-            {activeTab === 'files' ? renderFileExplorer() : renderMainContent()}
+            {renderMainContent()}
           </>
         ) : (
           // Desktop Layout with Resizable Panels
           <Group direction="horizontal" className="w-full h-full">
-            {isFileExplorerOpen && (
-              <>
-                <Panel defaultSize={20} minSize={15} maxSize={40} className="h-full">
-                  {renderFileExplorer()}
+            <Panel defaultSize={100} minSize={30} className="h-full">
+              <Group direction="vertical">
+                <Panel defaultSize={75} minSize={30} className="h-full">
+                  {renderMainContent()}
                 </Panel>
-                <PanelResizeHandle className="w-1 bg-gray-200 dark:bg-[#262626] hover:bg-blue-500/50 active:bg-blue-500 transition-colors cursor-col-resize" />
-              </>
-            )}
-            <Panel className="h-full">
-              {renderMainContent()}
+                <PanelResizeHandle className="h-1 bg-gray-200 dark:bg-[#262626] hover:bg-blue-500/50 active:bg-blue-500 transition-colors cursor-row-resize" />
+                <Panel defaultSize={25} minSize={10} maxSize={50}>
+                  {/* Terminal/Debugger content */}
+                  <div className="h-full flex flex-col bg-gray-50 dark:bg-[#0a0a0a]">
+                    <div className="px-3 py-2 text-[11px] font-bold text-gray-500 dark:text-[#888] bg-gray-100 dark:bg-[#151515] flex justify-between items-center">
+                      <span>TERMINAL / DEBUGGER</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-2 font-mono text-[12px] bg-white dark:bg-[#0a0a0a] flex flex-col gap-1">
+                      {consoleLogs.map((log, i) => (
+                        <div key={i} className={cn("py-1.5 border-b border-gray-100 dark:border-[#262626] break-words", log.level === 'error' ? 'text-red-600 dark:text-red-400' : log.level === 'warn' ? 'text-yellow-600 dark:text-yellow-400' : 'text-green-600 dark:text-green-400')}>
+                          <div className="flex justify-between items-start">
+                            <span className="opacity-50 mr-2 mt-0.5">{'>'}</span>
+                            <pre className="whitespace-pre-wrap flex-1 font-mono">{log.msg}</pre>
+                            {log.level === 'error' && (
+                              <button 
+                                onClick={() => onAskAIToFix(log.msg)}
+                                className="ml-2 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 px-2 py-1 rounded text-[10px] flex-shrink-0 transition-colors border border-red-500/20"
+                              >
+                                AI'ya Gönder
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {consoleLogs.length === 0 && <div className="text-gray-400 dark:text-[#555] italic">Konsol çıktısı yok...</div>}
+                    </div>
+                  </div>
+                </Panel>
+              </Group>
             </Panel>
           </Group>
         )}

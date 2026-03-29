@@ -1,29 +1,54 @@
-import { getEmbedding, cosineSimilarity } from './embeddingService';
-
-interface VectorEntry {
-  path: string;
-  content: string;
-  embedding: number[];
-}
-
 export class VectorStore {
-  private entries: VectorEntry[] = [];
+  private documents: Map<string, string> = new Map();
 
-  async indexFile(path: string, content: string) {
-    const embedding = await getEmbedding(content);
-    this.entries.push({ path, content, embedding });
+  clear() {
+    this.documents.clear();
   }
 
-  async search(query: string, limit: number = 3): Promise<string[]> {
-    const queryEmbedding = await getEmbedding(query);
+  async indexFile(path: string, content: string) {
+    this.documents.set(path, content.toLowerCase());
+  }
+
+  async search(query: string, limit: number = 5): Promise<string[]> {
+    const q = query.toLowerCase();
+    const terms = q.split(/\s+/).filter(t => t.length > 1);
     
-    return this.entries
-      .map(entry => ({
-        path: entry.path,
-        similarity: cosineSimilarity(queryEmbedding, entry.embedding)
-      }))
-      .sort((a, b) => b.similarity - a.similarity)
+    if (terms.length === 0) return [];
+
+    const scores = new Map<string, number>();
+
+    for (const [path, content] of this.documents.entries()) {
+      let score = 0;
+      
+      // Path match is highly relevant
+      for (const term of terms) {
+        if (path.toLowerCase().includes(term)) {
+          score += 10;
+        }
+      }
+
+      // Content match
+      for (const term of terms) {
+        try {
+          const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const regex = new RegExp(escapedTerm, 'g');
+          const matches = content.match(regex);
+          if (matches) {
+            score += matches.length;
+          }
+        } catch (e) {
+          // Ignore invalid regex
+        }
+      }
+
+      if (score > 0) {
+        scores.set(path, score);
+      }
+    }
+
+    return Array.from(scores.entries())
+      .sort((a, b) => b[1] - a[1])
       .slice(0, limit)
-      .map(entry => entry.path);
+      .map(entry => entry[0]);
   }
 }

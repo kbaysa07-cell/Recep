@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function getEmbedding(text: string): Promise<number[]> {
   const result = await ai.models.embedContent({
@@ -9,12 +9,13 @@ export async function getEmbedding(text: string): Promise<number[]> {
   });
   
   if (!result.embeddings || result.embeddings.length === 0) {
-    throw new Error("Embedding oluşturulamadı.");
+    throw new Error("Embedding alınamadı.");
   }
   
   return result.embeddings[0].values;
 }
 
+// Basit Cosine Similarity hesabı
 export function cosineSimilarity(vecA: number[], vecB: number[]): number {
   let dotProduct = 0;
   let normA = 0;
