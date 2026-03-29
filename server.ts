@@ -9,8 +9,22 @@ import git from "isomorphic-git";
 import httpGit from "isomorphic-git/http/node";
 import { Server } from "socket.io";
 import { createServer } from "http";
+import chokidar from "chokidar";
 
 dotenv.config();
+
+// --- SECURITY: safeExec ---
+const FORBIDDEN_COMMANDS = ['rm -rf /', 'rm -rf ~', ':(){ :|:& };:', 'mkfs', 'dd if=/dev/zero'];
+const safeExec = (command: string, callback: (error: any, stdout: string, stderr: string) => void) => {
+  const trimmed = command.trim();
+  if (FORBIDDEN_COMMANDS.some(forbidden => trimmed.includes(forbidden))) {
+    return callback(new Error("Forbidden command detected"), "", "Security violation: This command is not allowed.");
+  }
+  
+  // Basic sanitization: avoid command injection via pipes or redirects if not intended
+  // For now, we allow most commands but block the most dangerous ones.
+  return exec(command, callback);
+};
 
 async function startServer() {
   const app = express();
@@ -25,6 +39,41 @@ async function startServer() {
 
   app.use(cors());
   app.use(express.json());
+
+  // --- FILE WATCHER ---
+  const watcher = chokidar.watch(process.cwd(), {
+    ignored: [
+      /(^|[\/\\])\../, // ignore dotfiles
+      'node_modules/**',
+      'dist/**',
+      '.git/**'
+    ],
+    persistent: true,
+    ignoreInitial: true
+  });
+
+  watcher.on('all', (event, filePath) => {
+    const relativePath = path.relative(process.cwd(), filePath);
+    console.log(`File System Event: ${event} on ${relativePath}`);
+    
+    let content = null;
+    if (event === 'add' || event === 'change') {
+      try {
+        if (fs.statSync(filePath).isFile()) {
+           content = fs.readFileSync(filePath, 'utf-8');
+        }
+      } catch (e) {
+        console.error(`Error reading file ${relativePath}:`, e);
+      }
+    }
+
+    io.emit('fs:change', {
+      event,
+      path: relativePath,
+      content,
+      type: fs.existsSync(filePath) ? (fs.statSync(filePath).isDirectory() ? 'folder' : 'file') : null
+    });
+  });
 
   // --- API ROUTES ---
   
@@ -57,7 +106,7 @@ async function startServer() {
       }
     } else if (command.startsWith('git push')) {
       try {
-         exec('git push', (error, stdout, stderr) => {
+         safeExec('git push', (error, stdout, stderr) => {
             if (error) {
               return res.json({ error: error.message, stdout, stderr });
             }
@@ -71,7 +120,7 @@ async function startServer() {
        try {
           const file = command.split(' ')[2];
           if(file === '.') {
-             exec('git add .', (error, stdout, stderr) => {
+             safeExec('git add .', (error, stdout, stderr) => {
                 if (error) {
                   return res.json({ error: error.message, stdout, stderr });
                 }
@@ -87,7 +136,7 @@ async function startServer() {
        }
     }
 
-    exec(command, (error, stdout, stderr) => {
+    safeExec(command, (error, stdout, stderr) => {
       if (error) {
         return res.json({ error: error.message, stdout, stderr });
       }
@@ -96,6 +145,42 @@ async function startServer() {
   });
 
   // --- FILE OPERATIONS API ---
+  app.get("/api/files/tree", (req, res) => {
+    const getTree = (dir: string): any => {
+      const results: any = {};
+      const list = fs.readdirSync(dir);
+      list.forEach((file) => {
+        const filePath = path.join(dir, file);
+        const stat = fs.statSync(filePath);
+        const relativePath = path.relative(process.cwd(), filePath);
+        
+        if (file === 'node_modules' || file === '.git' || file === 'dist') return;
+
+        if (stat && stat.isDirectory()) {
+          results[file] = {
+            type: 'folder',
+            name: file,
+            children: getTree(filePath)
+          };
+        } else {
+          results[file] = {
+            type: 'file',
+            name: file,
+            content: fs.readFileSync(filePath, 'utf-8')
+          };
+        }
+      });
+      return results;
+    };
+
+    try {
+      const tree = getTree(process.cwd());
+      res.json(tree);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/files/read", (req, res) => {
     const { path: filePath } = req.body;
     if (!filePath) return res.status(400).json({ error: "Dosya yolu gerekli" });

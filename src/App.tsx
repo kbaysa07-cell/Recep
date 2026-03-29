@@ -17,6 +17,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAppLayout } from './hooks/useAppLayout';
 import { useActivity } from './hooks/useActivity';
 import { useChatTools } from './hooks/useChatTools';
+import { useFileWatcher } from './hooks/useFileWatcher';
 
 export default function App() {
   const state = useAppState();
@@ -36,6 +37,9 @@ export default function App() {
   } = useAppLayout();
   const { activity, setActivity } = useActivity();
   const tools = useChatTools(state.wsFiles, state.setWsFiles, setActivity, state.setGithubState);
+
+  // Initialize File Watcher
+  useFileWatcher(state.setWsFiles, setActivity);
 
   const handleAskAIToFix = (errorMsg: string) => {
     state.setActiveTab('chat');

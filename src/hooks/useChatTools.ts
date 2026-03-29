@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { WorkspaceFiles, FileNode } from '../types/workspace.types';
+import { toast } from 'sonner';
 
 import { Activity } from './useActivity';
 import { getEmbedding, cosineSimilarity } from '../services/embeddingService';
+import { sleep } from '../lib/aiUtils';
 import { analyzeAndFix } from '../services/selfHealingService';
 import { findNode, cloneWorkspace, flattenWorkspace, ensureDirectory } from '../lib/workspaceUtils';
 import { normalizePath } from '../lib/pathUtils';
@@ -41,97 +43,68 @@ export function useChatTools(
     const normalizedPath = normalizePath(path);
     if (!lastReadFiles.has(normalizedPath)) {
       setActivity(prev => [...prev, { type: 'terminal', message: `UYARI: ${normalizedPath} dosyası düzenlenmeden önce okunmadı.`, timestamp: Date.now() }]);
+      toast.warning(`${normalizedPath} dosyası okunmadan düzenleniyor!`);
     }
 
     try {
-      await fetch('/api/files/write', {
+      const response = await fetch('/api/files/write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: normalizedPath, content }),
       });
-    } catch (err) {
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Dosya yazma hatası");
+      }
+    } catch (err: any) {
+      setActivity(prev => [...prev, { type: 'terminal', message: `HATA: ${err.message}`, timestamp: Date.now() }]);
+      toast.error(`Dosya yazma hatası: ${err.message}`);
       console.error("Dosya yazma hatası:", err);
     }
     
-    setWsFiles(prev => {
-      const newFiles = cloneWorkspace(prev);
-      const parts = normalizedPath.split('/').filter(Boolean);
-      const fileName = parts.pop();
-      
-      if (!fileName) return prev;
-      
-      const parentDir = ensureDirectory(newFiles, parts.join('/'));
-      
-      if (parentDir[fileName]) {
-        parentDir[fileName].content = content;
-      } else {
-        parentDir[fileName] = { type: 'file', name: fileName, content };
-      }
-      
-      return newFiles;
-    });
     setActivity(prev => [...prev, { type: 'file', message: `Dosya düzenlendi: ${normalizedPath}`, timestamp: Date.now() }]);
   };
 
   const editMultipleFiles = async (files: { path: string; content: string }[]) => {
     try {
-      await Promise.all(files.map(file => fetch('/api/files/write', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: file.path, content: file.content }),
-      })));
-    } catch (err) {
+      await Promise.all(files.map(async file => {
+        const response = await fetch('/api/files/write', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: file.path, content: file.content }),
+        });
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || `Dosya yazma hatası: ${file.path}`);
+        }
+      }));
+    } catch (err: any) {
+      setActivity(prev => [...prev, { type: 'terminal', message: `HATA: ${err.message}`, timestamp: Date.now() }]);
+      toast.error(`Çoklu dosya yazma hatası: ${err.message}`);
       console.error("Çoklu dosya yazma hatası:", err);
     }
 
-    setWsFiles(prev => {
-      const newFiles = cloneWorkspace(prev);
-      
-      files.forEach(file => {
-        const parts = file.path.split('/').filter(Boolean);
-        const fileName = parts.pop();
-        
-        if (!fileName) return;
-        
-        const parentDir = ensureDirectory(newFiles, parts.join('/'));
-        
-        if (parentDir[fileName]) {
-          parentDir[fileName].content = file.content;
-        } else {
-          parentDir[fileName] = { type: 'file', name: fileName, content: file.content };
-        }
-      });
-      
-      return newFiles;
-    });
     setActivity(prev => [...prev, { type: 'file', message: `Çoklu dosya düzenlendi: ${files.map(f => f.path).join(', ')}`, timestamp: Date.now() }]);
   };
 
   const createFile = async (path: string, content: string) => {
     const normalizedPath = normalizePath(path);
     try {
-      await fetch('/api/files/create', {
+      const response = await fetch('/api/files/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: normalizedPath, content }),
       });
-    } catch (err) {
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Dosya oluşturma hatası");
+      }
+    } catch (err: any) {
+      setActivity(prev => [...prev, { type: 'terminal', message: `HATA: ${err.message}`, timestamp: Date.now() }]);
+      toast.error(`Dosya oluşturma hatası: ${err.message}`);
       console.error("Dosya oluşturma hatası:", err);
     }
 
-    const isBinary = normalizedPath.match(/\.(png|jpe?g|gif|webp|svg|mp3|wav|ogg)$/i) !== null;
-    setWsFiles(prev => {
-      const newFiles = cloneWorkspace(prev);
-      const parts = normalizedPath.split('/').filter(Boolean);
-      const fileName = parts.pop();
-      
-      if (!fileName) return prev;
-      
-      const parentDir = ensureDirectory(newFiles, parts.join('/'));
-      parentDir[fileName] = { type: 'file', name: fileName, content, isBinary };
-      
-      return newFiles;
-    });
     setActivity(prev => [...prev, { type: 'file', message: `Dosya oluşturuldu: ${normalizedPath}`, timestamp: Date.now() }]);
   };
 
@@ -296,7 +269,7 @@ export function useChatTools(
       
       const fileContent = getFileContent(filePath) || "";
       
-      const fixedContent = await analyzeAndFix(errorLog, fileContent, filePath);
+      const fixedContent = await analyzeAndFix(errorLog, fileContent, filePath, attempts + 1);
       editFile(filePath, fixedContent);
       
       attempts++;
@@ -315,6 +288,7 @@ export function useChatTools(
       
       for (const { path, node } of allFiles) {
         if (node.type === 'file' && node.content) {
+          await sleep(100); // Rate limit'e takılmamak için kısa bir bekleme
           const fileEmbedding = await getEmbedding(node.content.substring(0, 5000)); // İlk 5000 karakter
           const score = cosineSimilarity(queryEmbedding, fileEmbedding);
           results.push({ path, score, content: node.content });

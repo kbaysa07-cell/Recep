@@ -1,18 +1,21 @@
 import { GoogleGenAI } from "@google/genai";
+import { withRetry } from "../lib/aiUtils";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function getEmbedding(text: string): Promise<number[]> {
-  const result = await ai.models.embedContent({
-    model: 'gemini-embedding-2-preview',
-    contents: text,
+  return withRetry(async () => {
+    const result = await ai.models.embedContent({
+      model: 'gemini-embedding-2-preview',
+      contents: text,
+    });
+    
+    if (!result.embeddings || result.embeddings.length === 0) {
+      throw new Error("Embedding alınamadı.");
+    }
+    
+    return result.embeddings[0].values;
   });
-  
-  if (!result.embeddings || result.embeddings.length === 0) {
-    throw new Error("Embedding alınamadı.");
-  }
-  
-  return result.embeddings[0].values;
 }
 
 // Basit Cosine Similarity hesabı
